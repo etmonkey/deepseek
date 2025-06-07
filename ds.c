@@ -201,8 +201,16 @@ int ask_volc(cJSON *msg_jarr, cJSON* config, struct Memory* pmem) {
     char* str_auth = (char*) malloc(sizeof(char)*(strlen(api_key) + 23));
     sprintf(str_auth, "Authorization: Bearer %s", api_key);
 
+    char* model = NULL;
+    if (cJSON_HasObjectItem(config, "model")) {
+        model = cJSON_GetObjectItem(config, "model")->valuestring;
+    } else {
+        perror("no model found!");
+        exit(1);
+    }
+
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "model", "deepseek-r1-250120");
+    cJSON_AddStringToObject(root, "model", model);
     cJSON_AddBoolToObject(root, "stream", 1);
     cJSON_AddItemToObject(root, "messages", msg_jarr);
     char *post_fields = cJSON_Print(root);
