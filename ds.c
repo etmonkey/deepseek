@@ -255,7 +255,7 @@ void show_help() {
     printf("usage: ds <args> <question>\n");
     printf("args: \n");
     printf("\t-l: use local deepseek model\n");
-    printf("\t-n: use online deepseek model(default)\n");
+    printf("\t-m: choose online deepseek model v3(default)/r1\n");
     printf("\t-p: add prompt\n");
     printf("\t-q: add to question\n");
     printf("\t-c: chat mode\n");
