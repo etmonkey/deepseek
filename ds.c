@@ -201,11 +201,19 @@ int ask_volc(cJSON *msg_jarr, cJSON* config, struct Memory* pmem) {
     char* str_auth = (char*) malloc(sizeof(char)*(strlen(api_key) + 23));
     sprintf(str_auth, "Authorization: Bearer %s", api_key);
 
-    char* model = NULL;
+    char* model_name = NULL;
     if (cJSON_HasObjectItem(config, "model")) {
-        model = cJSON_GetObjectItem(config, "model")->valuestring;
+        model_name = cJSON_GetObjectItem(config, "model")->valuestring;
     } else {
         perror("no model found!");
+        exit(1);
+    }
+
+    char* model = NULL;
+    if (cJSON_HasObjectItem(config, model_name)) {
+        model = cJSON_GetObjectItem(config, model_name)->valuestring;
+    } else {
+        fprintf(stderr, "no model named %s found!\n", model_name);
         exit(1);
     }
 
@@ -318,8 +326,13 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
         cJSON_AddStringToObject(final_nested_object, "role", "user");
         cJSON_AddStringToObject(final_nested_object, "content", final_msg);
         cJSON_AddItemToArray(msg_jarr, final_nested_object);
-        mem.think_start_flag = 1;
-        mem.think_end_flag = 1;
+        
+        char* model_name = cJSON_GetObjectItem(config, "model")->valuestring;
+        if(strcmp(model_name, "r1")==0) {
+            mem.think_start_flag = mem.think_end_flag = 1;
+        } else {
+            mem.think_start_flag = mem.think_end_flag = 0;
+        }
         ask_volc(msg_jarr, config, &mem);
 
         char** chat_arr_temp = (char**)realloc(mem.chat_arr, sizeof(char*)*(mem.chat_arr_size+2));
@@ -395,6 +408,12 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory mem) {
     cJSON_AddStringToObject(nested_object, "content", final_msg);
     cJSON_AddItemToArray(msg_jarr, nested_object);
 
+    char* model_name = cJSON_GetObjectItem(config, "model")->valuestring;
+    if(strcmp(model_name, "r1")==0) {
+        mem.think_start_flag = mem.think_end_flag = 1;
+    } else {
+        mem.think_start_flag = mem.think_end_flag = 0;
+    }
     ask_volc(msg_jarr, config, &mem);
     return 0;
 }
@@ -409,22 +428,28 @@ int main(int argc, char **argv)
     int help_flag = 0;
     cJSON* config = read_config();
     char* question = NULL;
-    while ((opt = getopt(argc, argv, "hclnp:q:")) != -1) {
+    while ((opt = getopt(argc, argv, "hclm:p:q:")) != -1) {
         switch(opt) {
             case 'l':
                 local_flag = 1;
                 volc_flag = 0;
                 break;
-            case 'n':
+            case 'm':
                 local_flag = 0;
                 volc_flag = 1;
+                cJSON* model = cJSON_GetObjectItem(config, "model");
+                if (model) {
+                    cJSON_SetValuestring(model, strdup(optarg)); // 修改 name 的值
+                } else {
+                    cJSON_AddStringToObject(config, "model", strdup(optarg)); // 如果键不存在，添加键值对
+                }
                 break;
             case 'c':
                 chat_flag = 1;
                 break;
             case 'p':
                 cJSON* prompt = cJSON_GetObjectItem(config, "prompt");
-                if (prompt==NULL) {
+                if (prompt) {
                     cJSON_SetValuestring(prompt, strdup(optarg)); // 修改 name 的值
                 } else {
                     cJSON_AddStringToObject(config, "prompt", strdup(optarg)); // 如果键不存在，添加键值对
@@ -502,8 +527,8 @@ int main(int argc, char **argv)
     mem.chat_arr_size = 0;
     mem.reply = (char*)malloc(1);
     mem.reply_size = 0;
-    mem.think_start_flag = 1;   // 1表示还未进入回答callback
-    mem.think_end_flag = 1;
+    mem.think_start_flag = 0;   // 1表示还未进入回答callback
+    mem.think_end_flag = 0;
     if(help_flag) {
         show_help();
     } else if(local_flag) {
