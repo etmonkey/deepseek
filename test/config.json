@@ -1,0 +1,7 @@
+{
+    "prompt":  "请使用中文回答",
+    "api_key": "",
+    "model":   "v3",
+    "r1":      "deepseek-r1-250528",
+    "v3":      "deepseek-v3-2-251201"
+}

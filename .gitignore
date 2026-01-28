@@ -1,5 +1,4 @@
 *.o
 ds
 .vscode/
-config.json
 core.dump
