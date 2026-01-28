@@ -254,14 +254,12 @@ void show_help() {
 }
 
 cJSON* read_config() {
-    FILE *file = fopen("./config.json", "r");
-    if(file==NULL) {
-        file = fopen("/etc/deepseek/config.json", "r");
-        if(file == NULL) {
-            perror("no config file!");
-            exit(1);
-        }
+    FILE *file = fopen("/etc/deepseek/config.json", "r");
+    if(file == NULL) {
+        perror("no config file!");
+        exit(1);
     }
+
     // 获取文件大小
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
@@ -289,21 +287,116 @@ cJSON* read_config() {
     return json;
 }
 
-int count_digits(int num) {
-    int count = 0;
-
-    // 处理负数
-    if (num < 0) {
-        num = -num;
+int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
+    char* str_prompt = NULL;
+    if (cJSON_HasObjectItem(config, "prompt")) {
+        str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
     }
+    while (1)
+    {
+        cJSON* msg_jarr = cJSON_CreateArray();
+        cJSON* prompt_nested_object = NULL;
+        cJSON* final_nested_object = NULL;
+        if(str_prompt) {
+            prompt_nested_object = cJSON_CreateObject();
+            cJSON_AddStringToObject(prompt_nested_object, "role", "system");
+            cJSON_AddStringToObject(prompt_nested_object, "content", str_prompt);
+            cJSON_AddItemToArray(msg_jarr, prompt_nested_object);
+        }
+        cJSON** nested_objects = (cJSON**)malloc(sizeof(cJSON*)*mem.chat_arr_size);
+        for(int i=0; i<mem.chat_arr_size; i+=2) {
+            nested_objects[i] = cJSON_CreateObject();
+            cJSON_AddStringToObject(nested_objects[i], "role", "user");
+            cJSON_AddStringToObject(nested_objects[i], "content", mem.chat_arr[i]);
+            cJSON_AddItemToArray(msg_jarr, nested_objects[i]);
+            nested_objects[i+1] = cJSON_CreateObject();
+            cJSON_AddStringToObject(nested_objects[i+1], "role", "assistant");
+            cJSON_AddStringToObject(nested_objects[i+1], "content", mem.chat_arr[i+1]);
+            cJSON_AddItemToArray(msg_jarr, nested_objects[i+1]);
+        }
+        final_nested_object = cJSON_CreateObject();
+        cJSON_AddStringToObject(final_nested_object, "role", "user");
+        cJSON_AddStringToObject(final_nested_object, "content", final_msg);
+        cJSON_AddItemToArray(msg_jarr, final_nested_object);
+        mem.think_start_flag = 1;
+        mem.think_end_flag = 1;
+        ask_volc(msg_jarr, config, &mem);
 
-    // 循环除以 10
-    do {
-        num /= 10;
-        count++;
-    } while (num != 0);
+        char** chat_arr_temp = (char**)realloc(mem.chat_arr, sizeof(char*)*(mem.chat_arr_size+2));
+        if(chat_arr_temp) {
+            mem.chat_arr = chat_arr_temp;
+            char* final_msg_temp = (char*) malloc(sizeof(char)*(strlen(final_msg)+1));
+            char* reply_temp = (char*) malloc(sizeof(char)*(strlen(mem.reply)+1));
+            if(final_msg_temp && reply_temp) {
+                strncpy(final_msg_temp, final_msg, strlen(final_msg));
+                final_msg_temp[strlen(final_msg)] = '\0';
+                strncpy(reply_temp, mem.reply, strlen(mem.reply));
+                reply_temp[strlen(mem.reply)] = '\0';
+                free(final_msg);
+                mem.reply_size = 0;
+            } else {
+                perror("allocating memory error!");
+                exit(1);
+            }
+            mem.chat_arr[mem.chat_arr_size] = final_msg_temp;
+            mem.chat_arr[mem.chat_arr_size+1] = reply_temp;
+            mem.chat_arr_size += 2;
+        } else {
+            perror("allocating chat array memory failed");
+            exit(1);
+        }
+        printf(">");
+        if (!isatty(fileno(stdin))) {
+            fclose(stdin);
+            stdin = fopen("/dev/tty", "r");
+            if (stdin == NULL) {
+                perror("can not open terminal");
+                return 1;
+            }
+        }
+        char* buffer = NULL;
+        size_t len = 0;
+        ssize_t read = getline(&buffer, &len, stdin); // 读取一行
+        if (read != -1) {
+            // 去掉换行符（如果存在）
+            if (buffer[read - 1] == '\n') {
+                buffer[read - 1] = '\0';
+            }
+        } else {
+            perror("read question buffer error!");
+            return 1;
+        }
+        if(strcmp(buffer, "/bye")==0) {
+            // free(buffer);
+            return 0;
+        }
+        final_msg = (char*)malloc(sizeof(char)*(strlen(buffer)+1));
+        sprintf(final_msg, "%s", buffer);
+        free(buffer);
+    }
+    return 0;
+}
 
-    return count;
+int ask_one_shot(cJSON* config, char* final_msg, struct Memory mem) {
+    char* str_prompt = NULL;
+    if (cJSON_HasObjectItem(config, "prompt")) {
+        str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
+    }
+    cJSON *msg_jarr = cJSON_CreateArray();
+    cJSON *nested_object = NULL;
+    if(str_prompt) {
+        nested_object = cJSON_CreateObject();
+        cJSON_AddStringToObject(nested_object, "role", "system");
+        cJSON_AddStringToObject(nested_object, "content", str_prompt);
+        cJSON_AddItemToArray(msg_jarr, nested_object);
+    }
+    nested_object = cJSON_CreateObject();
+    cJSON_AddStringToObject(nested_object, "role", "user");
+    cJSON_AddStringToObject(nested_object, "content", final_msg);
+    cJSON_AddItemToArray(msg_jarr, nested_object);
+
+    ask_volc(msg_jarr, config, &mem);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -417,112 +510,9 @@ int main(int argc, char **argv)
         ask_local(final_msg, &mem);
     } else if(volc_flag) {
         if(chat_flag){
-            // char buffer[INPUT_SIZE+1];
-            char* str_prompt = NULL;
-            if (cJSON_HasObjectItem(config, "prompt")) {
-                str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
-            }
-            while (1)
-            {
-                cJSON* msg_jarr = cJSON_CreateArray();
-                cJSON* prompt_nested_object = NULL;
-                cJSON* final_nested_object = NULL;
-                if(str_prompt) {
-                    prompt_nested_object = cJSON_CreateObject();
-                    cJSON_AddStringToObject(prompt_nested_object, "role", "system");
-                    cJSON_AddStringToObject(prompt_nested_object, "content", str_prompt);
-                    cJSON_AddItemToArray(msg_jarr, prompt_nested_object);
-                }
-                cJSON** nested_objects = (cJSON**)malloc(sizeof(cJSON*)*mem.chat_arr_size);
-                for(int i=0; i<mem.chat_arr_size; i+=2) {
-                    nested_objects[i] = cJSON_CreateObject();
-                    cJSON_AddStringToObject(nested_objects[i], "role", "user");
-                    cJSON_AddStringToObject(nested_objects[i], "content", mem.chat_arr[i]);
-                    cJSON_AddItemToArray(msg_jarr, nested_objects[i]);
-                    nested_objects[i+1] = cJSON_CreateObject();
-                    cJSON_AddStringToObject(nested_objects[i+1], "role", "assistant");
-                    cJSON_AddStringToObject(nested_objects[i+1], "content", mem.chat_arr[i+1]);
-                    cJSON_AddItemToArray(msg_jarr, nested_objects[i+1]);
-                }
-                final_nested_object = cJSON_CreateObject();
-                cJSON_AddStringToObject(final_nested_object, "role", "user");
-                cJSON_AddStringToObject(final_nested_object, "content", final_msg);
-                cJSON_AddItemToArray(msg_jarr, final_nested_object);
-                mem.think_start_flag = 1;
-                mem.think_end_flag = 1;
-                ask_volc(msg_jarr, config, &mem);
-
-                char** chat_arr_temp = (char**)realloc(mem.chat_arr, sizeof(char*)*(mem.chat_arr_size+2));
-                if(chat_arr_temp) {
-                    mem.chat_arr = chat_arr_temp;
-                    char* final_msg_temp = (char*) malloc(sizeof(char)*(strlen(final_msg)+1));
-                    char* reply_temp = (char*) malloc(sizeof(char)*(strlen(mem.reply)+1));
-                    if(final_msg_temp && reply_temp) {
-                        strncpy(final_msg_temp, final_msg, strlen(final_msg));
-                        final_msg_temp[strlen(final_msg)] = '\0';
-                        strncpy(reply_temp, mem.reply, strlen(mem.reply));
-                        reply_temp[strlen(mem.reply)] = '\0';
-                        free(final_msg);
-                        mem.reply_size = 0;
-                    } else {
-                        perror("allocating memory error!");
-                        exit(1);
-                    }
-                    mem.chat_arr[mem.chat_arr_size] = final_msg_temp;
-                    mem.chat_arr[mem.chat_arr_size+1] = reply_temp;
-                    mem.chat_arr_size += 2;
-                } else {
-                    perror("allocating chat array memory failed");
-                    exit(1);
-                }
-                printf(">");
-                if (!isatty(fileno(stdin))) {
-                    fclose(stdin);
-                    stdin = fopen("/dev/tty", "r");
-                    if (stdin == NULL) {
-                        perror("can not open terminal");
-                        return 1;
-                    }
-                }
-                char* buffer = NULL;
-                size_t len = 0;
-                ssize_t read = getline(&buffer, &len, stdin); // 读取一行
-                if (read != -1) {
-                    // 去掉换行符（如果存在）
-                    if (buffer[read - 1] == '\n') {
-                        buffer[read - 1] = '\0';
-                    }
-                } else {
-                    perror("read question buffer error!");
-                    return 1;
-                }
-                if(strcmp(buffer, "/bye")==0) {
-                    // free(buffer);
-                    return 0;
-                }
-                final_msg = (char*)malloc(sizeof(char)*(strlen(buffer)+1));
-                sprintf(final_msg, "%s", buffer);
-                free(buffer);
-            }
+            ask_for_chat(config, final_msg, mem);
         } else {
-            char* str_prompt = NULL;
-            if (cJSON_HasObjectItem(config, "prompt")) {
-                str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
-            }
-            cJSON *msg_jarr = cJSON_CreateArray();
-            cJSON *nested_object = NULL;
-            if(str_prompt) {
-                nested_object = cJSON_CreateObject();
-                cJSON_AddStringToObject(nested_object, "role", "system");
-                cJSON_AddStringToObject(nested_object, "content", str_prompt);
-                cJSON_AddItemToArray(msg_jarr, nested_object);
-            }
-            nested_object = cJSON_CreateObject();
-            cJSON_AddStringToObject(nested_object, "role", "user");
-            cJSON_AddStringToObject(nested_object, "content", final_msg);
-            cJSON_AddItemToArray(msg_jarr, nested_object);
-
-            ask_volc(msg_jarr, config, &mem);
+            ask_one_shot(config, final_msg, mem);
         }
     }
     return 0;
