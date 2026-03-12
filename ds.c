@@ -20,15 +20,16 @@ struct Memory {
     size_t chat_arr_size;
 };
 
-void rstrip(char *str) {
+int rstrip(char *str) {
     int end = strlen(str) - 1;
 
     // 去掉末尾空格
-    while (isspace((unsigned char)str[end])) {
+    while (isspace((unsigned char)str[end]) && str[end]!='\n') {
         end--;
     }
 
     str[end+1] = '\0';
+    return end + 1;
 }
 
 // 回调函数：将接收到的数据存储到 Memory 结构体中
@@ -94,6 +95,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                 char* error_msg = cJSON_GetObjectItem(error, "message")->valuestring;
                 printf("error requesting data, error code: %s\n", error_code);
                 printf("error message: %s\n", error_msg);
+                cJSON_Delete(root);
                 return 1;
             }
             if (cJSON_HasObjectItem(root, "choices")) {
@@ -132,9 +134,9 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                         }
                     }
                 }
-                // cJSON_Delete(root);
             }
             free(json_str);
+            cJSON_Delete(root);
             start_idx = end_idx + 1;
         }
     }
@@ -243,6 +245,7 @@ int ask_volc(cJSON *msg_jarr, cJSON* config, struct Memory* pmem) {
     cJSON_Delete(root);
     free(post_fields);
     free(str_auth);
+    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     curl_global_cleanup();
     return 0;
@@ -292,10 +295,11 @@ cJSON* read_config() {
     }
 
     fclose(file);
+    free(json_data);
     return json;
 }
 
-int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
+int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
     char* str_prompt = NULL;
     if (cJSON_HasObjectItem(config, "prompt")) {
         str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
@@ -311,15 +315,15 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
             cJSON_AddStringToObject(prompt_nested_object, "content", str_prompt);
             cJSON_AddItemToArray(msg_jarr, prompt_nested_object);
         }
-        cJSON** nested_objects = (cJSON**)malloc(sizeof(cJSON*)*mem.chat_arr_size);
-        for(int i=0; i<mem.chat_arr_size; i+=2) {
+        cJSON** nested_objects = (cJSON**)malloc(sizeof(cJSON*)*(pmem->chat_arr_size));
+        for(int i=0; i<pmem->chat_arr_size; i+=2) {
             nested_objects[i] = cJSON_CreateObject();
             cJSON_AddStringToObject(nested_objects[i], "role", "user");
-            cJSON_AddStringToObject(nested_objects[i], "content", mem.chat_arr[i]);
+            cJSON_AddStringToObject(nested_objects[i], "content", pmem->chat_arr[i]);
             cJSON_AddItemToArray(msg_jarr, nested_objects[i]);
             nested_objects[i+1] = cJSON_CreateObject();
             cJSON_AddStringToObject(nested_objects[i+1], "role", "assistant");
-            cJSON_AddStringToObject(nested_objects[i+1], "content", mem.chat_arr[i+1]);
+            cJSON_AddStringToObject(nested_objects[i+1], "content", pmem->chat_arr[i+1]);
             cJSON_AddItemToArray(msg_jarr, nested_objects[i+1]);
         }
         final_nested_object = cJSON_CreateObject();
@@ -329,31 +333,31 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
         
         char* model_name = cJSON_GetObjectItem(config, "model")->valuestring;
         if(strcmp(model_name, "r1")==0) {
-            mem.think_start_flag = mem.think_end_flag = 1;
+            pmem->think_start_flag = pmem->think_end_flag = 1;
         } else {
-            mem.think_start_flag = mem.think_end_flag = 0;
+            pmem->think_start_flag = pmem->think_end_flag = 0;
         }
-        ask_volc(msg_jarr, config, &mem);
+        ask_volc(msg_jarr, config, pmem);
 
-        char** chat_arr_temp = (char**)realloc(mem.chat_arr, sizeof(char*)*(mem.chat_arr_size+2));
+        char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size+2));
         if(chat_arr_temp) {
-            mem.chat_arr = chat_arr_temp;
+            pmem->chat_arr = chat_arr_temp;
             char* final_msg_temp = (char*) malloc(sizeof(char)*(strlen(final_msg)+1));
-            char* reply_temp = (char*) malloc(sizeof(char)*(strlen(mem.reply)+1));
+            char* reply_temp = (char*) malloc(sizeof(char)*(strlen(pmem->reply)+1));
             if(final_msg_temp && reply_temp) {
                 strncpy(final_msg_temp, final_msg, strlen(final_msg));
                 final_msg_temp[strlen(final_msg)] = '\0';
-                strncpy(reply_temp, mem.reply, strlen(mem.reply));
-                reply_temp[strlen(mem.reply)] = '\0';
+                strncpy(reply_temp, pmem->reply, strlen(pmem->reply));
+                reply_temp[strlen(pmem->reply)] = '\0';
                 free(final_msg);
-                mem.reply_size = 0;
+                pmem->reply_size = 0;
             } else {
                 perror("allocating memory error!");
                 exit(1);
             }
-            mem.chat_arr[mem.chat_arr_size] = final_msg_temp;
-            mem.chat_arr[mem.chat_arr_size+1] = reply_temp;
-            mem.chat_arr_size += 2;
+            pmem->chat_arr[pmem->chat_arr_size] = final_msg_temp;
+            pmem->chat_arr[pmem->chat_arr_size+1] = reply_temp;
+            pmem->chat_arr_size += 2;
         } else {
             perror("allocating chat array memory failed");
             exit(1);
@@ -390,7 +394,7 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory mem) {
     return 0;
 }
 
-int ask_one_shot(cJSON* config, char* final_msg, struct Memory mem) {
+int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
     char* str_prompt = NULL;
     if (cJSON_HasObjectItem(config, "prompt")) {
         str_prompt = cJSON_GetObjectItem(config, "prompt")->valuestring;
@@ -410,11 +414,11 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory mem) {
 
     char* model_name = cJSON_GetObjectItem(config, "model")->valuestring;
     if(strcmp(model_name, "r1")==0) {
-        mem.think_start_flag = mem.think_end_flag = 1;
+        pmem->think_start_flag = pmem->think_end_flag = 1;
     } else {
-        mem.think_start_flag = mem.think_end_flag = 0;
+        pmem->think_start_flag = pmem->think_end_flag = 0;
     }
-    ask_volc(msg_jarr, config, &mem);
+    ask_volc(msg_jarr, config, pmem);
     return 0;
 }
 
@@ -466,46 +470,37 @@ int main(int argc, char **argv)
                 return 1;
         }
     }
-    char* msg = NULL;
+    char* msg = (char*) malloc(sizeof(char)*1);
+    *msg = '\0';
     struct stat statbuf;
-    const int buffer_size = 1024;
-    char buffer[buffer_size];
     if(fstat(STDIN_FILENO, &statbuf)==0 && S_ISFIFO(statbuf.st_mode)) { //从管道获得参数
-        int i = 1;
+        const int buffer_size = 1024;
+        char buffer[buffer_size];
+        int msg_size = 1;
         while(fgets(buffer, buffer_size, stdin) != NULL) {
-            rstrip(buffer);
-            char* temp = (char*)realloc(msg, sizeof(char)*buffer_size*i);
+            msg_size += rstrip(buffer);
+            char* temp = (char*)realloc(msg, sizeof(char)*msg_size);
             if (temp) {
                 msg = temp;
-                strncat(msg, buffer, buffer_size*i);
+                strncat(msg, buffer, msg_size);
             } else {
                 free(msg);  // 失败时释放旧内存
                 return 1;
             }
-            i++;
         }
         // printf("%s\n", msg);
     } else {    // 从标准输入获得参数
         if(optind<argc) {
+            int msg_size = 1;
             for(int i=optind; i<argc; i++) {
-                char* msg_temp = NULL;
-                if(msg==NULL) {
-                    msg = "";
-                }
-                msg_temp = (char*)malloc(sizeof(char)*(strlen(msg)+1));
+                msg_size += strlen(argv[i]) + 1;
+                char* msg_temp = (char*)realloc(msg, sizeof(char)*msg_size);
                 if(msg_temp) {
-                    strcpy(msg_temp, msg);
+                    msg = msg_temp;
+                    strcat(msg, " ");
+                    strncat(msg, argv[i], strlen(argv[i]));
                 } else {
-                    return 1;
-                }
-
-                msg = (char*)malloc(sizeof(char)*(strlen(msg_temp)+strlen(argv[i])+2));
-                if (msg) {
-                    sprintf(msg, "%s %s", msg_temp, argv[i]);
-                    free(msg_temp);
-                } else {  // 失败时释放旧内存
                     free(msg);
-                    free(msg_temp);
                     return 1;
                 }
             }
@@ -535,10 +530,18 @@ int main(int argc, char **argv)
         ask_local(final_msg, &mem);
     } else if(volc_flag) {
         if(chat_flag){
-            ask_for_chat(config, final_msg, mem);
+            ask_for_chat(config, final_msg, &mem);
         } else {
-            ask_one_shot(config, final_msg, mem);
+            ask_one_shot(config, final_msg, &mem);
         }
     }
+    cJSON_Delete(config);
+    free(final_msg);
+    free(mem.data);
+    free(mem.reply);
+    for(int i=0; i<mem.chat_arr_size; i++) {
+        free(mem.chat_arr[i]);
+    }
+    free(mem.chat_arr);
     return 0;
 }
