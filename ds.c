@@ -135,10 +135,10 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                     }
                 }
             }
-            free(json_str);
             cJSON_Delete(root);
             start_idx = end_idx + 1;
         }
+        free(json_str);
     }
 
     return total_size;
