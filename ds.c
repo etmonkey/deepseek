@@ -186,7 +186,7 @@ int ask_local(char* msg, struct Memory* pmem) {
 /**
  * 调用字节引擎
  */
-int ask_volc(cJSON *msg_jarr, cJSON* config, struct Memory* pmem) {
+int ask_online(cJSON *msg_jarr, cJSON* config, struct Memory* pmem) {
     CURL* curl;
     curl_global_init(CURL_GLOBAL_DEFAULT);
     curl = curl_easy_init();
@@ -337,7 +337,7 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
         } else {
             pmem->think_start_flag = pmem->think_end_flag = 0;
         }
-        ask_volc(msg_jarr, config, pmem);
+        ask_online(msg_jarr, config, pmem);
 
         char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size+2));
         if(chat_arr_temp) {
@@ -418,7 +418,7 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
     } else {
         pmem->think_start_flag = pmem->think_end_flag = 0;
     }
-    ask_volc(msg_jarr, config, pmem);
+    ask_online(msg_jarr, config, pmem);
     return 0;
 }
 
@@ -426,27 +426,14 @@ int main(int argc, char **argv)
 {
     // 获取参数
     int opt;
-    int local_flag = 0;
-    int volc_flag = 1;
     int chat_flag = 0;
     int help_flag = 0;
     cJSON* config = read_config();
     char* question = NULL;
-    while ((opt = getopt(argc, argv, "hclm:p:q:")) != -1) {
+    while ((opt = getopt(argc, argv, "hcp:q:v:m:e:f:s:t:o:ku")) != -1) {
         switch(opt) {
-            case 'l':
-                local_flag = 1;
-                volc_flag = 0;
-                break;
-            case 'm':
-                local_flag = 0;
-                volc_flag = 1;
-                cJSON* model = cJSON_GetObjectItem(config, "model");
-                if (model) {
-                    cJSON_SetValuestring(model, strdup(optarg)); // 修改 name 的值
-                } else {
-                    cJSON_AddStringToObject(config, "model", strdup(optarg)); // 如果键不存在，添加键值对
-                }
+            case 'h':
+                help_flag = 1;
                 break;
             case 'c':
                 chat_flag = 1;
@@ -462,8 +449,77 @@ int main(int argc, char **argv)
             case 'q':
                 question = strdup(optarg);
                 break;
-            case 'h':
-                help_flag = 1;
+            case 'V':
+                cJSON* provider_choice = cJSON_GetObjectItem(config, "provider_choice");
+                if (provider_choice) {
+                    cJSON_SetValuestring(provider_choice, strdup(optarg)); // 修改 provider_choice 的值
+                } else {
+                    cJSON_AddStringToObject(config, "provider_choice", strdup(optarg)); // 如果键不存在，添加键值对
+                }
+                break;
+            case 'm':
+                cJSON* model_choice = cJSON_GetObjectItem(config, "model_choice");
+                if (model_choice) {
+                    cJSON_SetValuestring(model_choice, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "model_choice", strdup(optarg));
+                }
+                break;
+            case 'e':
+                cJSON* reasoning_effort = cJSON_GetObjectItem(config, "reasoning_effort");
+                if (reasoning_effort) {
+                    cJSON_SetValuestring(reasoning_effort, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "reasoning_effort", strdup(optarg));
+                }
+                break;
+            case 'f':
+                cJSON* frequency_penalty = cJSON_GetObjectItem(config, "frequency_penalty");
+                if (frequency_penalty) {
+                    cJSON_SetValuestring(frequency_penalty, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "frequency_penalty", strdup(optarg));
+                }
+                break;
+            case 's':
+                cJSON* presence_penalty = cJSON_GetObjectItem(config, "presence_penalty");
+                if (presence_penalty) {
+                    cJSON_SetValuestring(presence_penalty, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "presence_penalty", strdup(optarg));
+                }
+                break;
+            case 't':
+                cJSON* temperature = cJSON_GetObjectItem(config, "temperature");
+                if (temperature) {
+                    cJSON_SetValuestring(temperature, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "temperature", strdup(optarg));
+                }
+                break;
+            case 'o':
+                cJSON* max_tokens = cJSON_GetObjectItem(config, "max_tokens");
+                if (max_tokens) {
+                    cJSON_SetValuestring(max_tokens, strdup(optarg));
+                } else {
+                    cJSON_AddStringToObject(config, "max_tokens", strdup(optarg));
+                }
+                break;
+            case 'k':
+                cJSON* thinking = cJSON_GetObjectItem(config, "thinking");
+                if (thinking) {
+                    cJSON_SetValuestring(thinking, "enabled");
+                } else {
+                    cJSON_AddStringToObject(config, "thinking", "enabled");
+                }
+                break;
+            case 'u':
+                cJSON* include_usage = cJSON_GetObjectItem(config, "include_usage");
+                if(include_usage) {
+                    cJSON_SetValuestring(include_usage, 1);
+                } else {
+                    cJSON_AddStringToObject(config, "include_usage", 1);
+                }
                 break;
             case '?':
                 fprintf(stderr, "未知选项或缺少参数: -%c\n", optopt);
@@ -526,9 +582,7 @@ int main(int argc, char **argv)
     mem.think_end_flag = 0;
     if(help_flag) {
         show_help();
-    } else if(local_flag) {
-        ask_local(final_msg, &mem);
-    } else if(volc_flag) {
+    } else {
         if(chat_flag){
             ask_for_chat(config, final_msg, &mem);
         } else {

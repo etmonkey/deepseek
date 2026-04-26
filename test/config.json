@@ -1,7 +1,37 @@
 {
+    "provider_choice": "official",
+    "provider": {
+        "official": {
+            "base_url": "https://api.deepseek.com/chat/completions",
+            "api_key":  "",
+            "model": {
+                "flash": "deepseek-v4-flash",
+                "pro": "deepseek-v4-pro"
+            }
+        },
+        "volcano": {
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+            "api_key":  "",
+            "model": {
+                "r1": "deepseek-r1-250528",
+                "v3": "deepseek-v3-2-251201"
+            }
+        },
+        "local": {
+            "base_url": "http://localhost:11434/api/generate",
+            "model": {
+                "r1": "deepseek-r1:14b"
+            }
+        }
+    },
+    "model_choice": "flash",
     "prompt":  "请使用中文回答",
-    "api_key": "",
-    "model":   "v3",
-    "r1":      "deepseek-r1-250528",
-    "v3":      "deepseek-v3-2-251201"
+    "thinking": "disabled",
+    "reasoning_effort": "high",
+    "frequency_penalty": 0,
+    "presence_penalty": 0,
+    "temperature": 1,
+    "max_tokens": 4096,
+    "stream": true,
+    "include_usage": false
 }
