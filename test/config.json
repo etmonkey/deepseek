@@ -28,8 +28,6 @@
     "prompt":  "请使用中文回答",
     "thinking": "disabled",
     "reasoning_effort": "high",
-    "frequency_penalty": 0,
-    "presence_penalty": 0,
     "temperature": 1,
     "max_tokens": 4096,
     "stream": true,
