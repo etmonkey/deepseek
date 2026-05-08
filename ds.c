@@ -586,13 +586,19 @@ cJSON* read_config() {
  * 展示帮助信息
  */
 void show_help() {
-    printf("usage: ds <args> <question>\n");
+    printf("usage: ds [args] [question]\n");
     printf("args: \n");
-    printf("\t-l: use local deepseek model\n");
-    printf("\t-m: choose online deepseek model v3(default)/r1\n");
+    printf("\t-h: show help\n");
+    printf("\t-c: chat mode\n");
     printf("\t-p: add prompt\n");
     printf("\t-q: add to question\n");
-    printf("\t-c: chat mode\n");
+    printf("\t-v: choose deepseek provider\n");
+    printf("\t-m: choose deepseek model flash(default)/pro/v3/r1\n");
+    printf("\t-e: choose reasoning effort\n");
+    printf("\t-t: set temperature(0~2), higher for more random result\n");
+    printf("\t-o: max output tokens(max 384K)\n");
+    printf("\t-k: set thinking mode enabled\n");
+    printf("\t-u: set outputing usage\n");
 }
 
 int main(int argc, char **argv)
