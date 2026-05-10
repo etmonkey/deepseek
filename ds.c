@@ -10,7 +10,7 @@
 #define MAX_CONTEXT_SIZE 1024*1024
 #define MAX_MSG_FACTOR 0.7
 
-void parse_config(const cJSON*, cJSON*, char*, char*, char*, char*);
+void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
 
 struct Memory {
     char* data;         // 返回的数据块
@@ -18,6 +18,7 @@ struct Memory {
     char** chat_arr;    // 对话历史
     int think_start_flag;   // 思考数据块开始标志
     int think_end_flag;     // 思考数据块结束标志
+    int direct_chat_flag;   // 是否直接进入对话模式
     size_t size;
     size_t reply_size;
     size_t chat_arr_size;   // 对话长度
@@ -118,7 +119,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                                     fflush(stdout); // 立即输出思考内容
                                 }
                                 if(content && cJSON_IsString(content)) {
-                                    if(pmem->think_end_flag && strlen(content->valuestring)) {printf("<\\think>\n"); pmem->think_end_flag=0;}
+                                    if(pmem->think_end_flag && strlen(content->valuestring)) {printf("\n<\\think>\n"); pmem->think_end_flag=0;}
                                     printf("%s", content->valuestring);
                                     fflush(stdout); // 立即输出回答内容
                                     int content_size = strlen(content->valuestring);
@@ -212,7 +213,7 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
         pmem->think_start_flag = pmem->think_end_flag = 0;
     }
 
-    int is_stream = cJSON_GetObjectItem(data_root, "stream")->valueint;
+    cJSON* is_stream = cJSON_GetObjectItem(data_root, "stream");
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -221,12 +222,22 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
     curl_easy_setopt(curl, CURLOPT_URL, base_url);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_fields);
-    is_stream==1 ? curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_stream_cb) :
+    if(cJSON_IsBool(is_stream)) {
+        if(cJSON_IsTrue(is_stream))
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_stream_cb);
+        else
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    } 
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)pmem);
     // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
     CURLcode res = curl_easy_perform(curl);
-    if(res != CURLE_OK) {
+    if(res == CURLE_OK) {
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        if(http_code < 200 || http_code >= 300) {
+            fprintf(stderr, "fetch result error: %s\n", pmem->data);
+        }
+    } else {
         fprintf(stderr, "cURL request failed: %s\n", curl_easy_strerror(res));
         return 1;
     }
@@ -244,27 +255,26 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
  */
 int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
     cJSON* data_root = cJSON_CreateObject();
-    char* base_url = NULL;
-    char* api_key = NULL;
-    char* str_prompt = NULL;
-    char* model_choice = NULL;
+    char** base_url = (char**) malloc(sizeof(char*));
+    char** api_key = (char**) malloc(sizeof(char*));
+    char** str_prompt = (char**) malloc(sizeof(char*));
+    char** model_choice = (char**) malloc(sizeof(char*));
     parse_config(config, data_root, base_url, api_key, str_prompt, model_choice);
 
     cJSON* msg_jarr = cJSON_CreateArray();
     cJSON* prompt_nested_object = NULL;
-    if(str_prompt) {
+    if(*str_prompt) {
         prompt_nested_object = cJSON_CreateObject();
         cJSON_AddStringToObject(prompt_nested_object, "role", "system");
-        cJSON_AddStringToObject(prompt_nested_object, "content", str_prompt);
+        cJSON_AddStringToObject(prompt_nested_object, "content", *str_prompt);
         cJSON_AddItemToArray(msg_jarr, prompt_nested_object);
     }
-    // 值为1时代表不从命令行参数获取提问，直接进入对话
-    int direct_chat_flag = strlen(final_msg)==0;
-    
+    cJSON_AddItemToObject(data_root, "messages", msg_jarr);
+
     while (1)
     {
-        if(direct_chat_flag==1) {
-            direct_chat_flag = 0;
+        if(pmem->direct_chat_flag==1) {
+            pmem->direct_chat_flag = 0;
             goto chat_prompt;
         }
         char* dup_msg = strndup(final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
@@ -278,9 +288,8 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
             exit(1);
         }
 
-        cJSON_AddItemToObject(data_root, "messages", msg_jarr);
         // 调用deepseek服务
-        ask_online(pmem, data_root, base_url, api_key, model_choice);
+        ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
 
         char* dup_reply = strndup(pmem->reply, MAX_CONTEXT_SIZE);
         if(dup_reply) {
@@ -299,7 +308,6 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
             char* final_msg_temp = strndup(final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
             char* reply_temp = strndup(pmem->reply, MAX_CONTEXT_SIZE);
             if(final_msg_temp && reply_temp) {
-                free(final_msg);
                 pmem->reply_size = 0;
             } else {
                 perror("allocating memory error!");
@@ -336,7 +344,7 @@ chat_prompt:
             return 1;
         }
         if(strcmp(buffer, "/bye")==0) {
-            // free(buffer);
+            free(buffer);
             break;
         }
         
@@ -357,18 +365,18 @@ chat_prompt:
  */
 int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
     cJSON* data_root = cJSON_CreateObject();
-    char* base_url = NULL;
-    char* api_key = NULL;
-    char* str_prompt = NULL;
-    char* model_choice = NULL;
+    char** base_url = (char**) malloc(sizeof(char*));
+    char** api_key = (char**) malloc(sizeof(char*));
+    char** str_prompt = (char**) malloc(sizeof(char*));
+    char** model_choice = (char**) malloc(sizeof(char*));
     parse_config(config, data_root, base_url, api_key, str_prompt, model_choice);
 
     cJSON *msg_jarr = cJSON_CreateArray();
     cJSON *nested_object = NULL;
-    if(str_prompt) {
+    if(*str_prompt) {
         nested_object = cJSON_CreateObject();
         cJSON_AddStringToObject(nested_object, "role", "system");
-        cJSON_AddStringToObject(nested_object, "content", str_prompt);
+        cJSON_AddStringToObject(nested_object, "content", *str_prompt);
         cJSON_AddItemToArray(msg_jarr, nested_object);
     }
     nested_object = cJSON_CreateObject();
@@ -378,16 +386,20 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
 
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
 
-    ask_online(pmem, data_root, base_url, api_key, model_choice);
+    ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
 
     cJSON_Delete(data_root);
+    free(base_url);
+    free(api_key);
+    free(str_prompt);
+    free(model_choice);
     return 0;
 }
 
 /**
  * 将config整理为直接可用的JSON，读取base_url和api_key
  */
-void parse_config(const cJSON* config, cJSON* data_root, char* base_url, char* api_key, char* prompt, char* model_choice) {
+void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char** api_key, char** prompt, char** model_choice) {
     char* provider_choice = NULL;
     if (cJSON_HasObjectItem(config, "provider_choice")) {
         provider_choice = cJSON_GetObjectItem(config, "provider_choice")->valuestring;
@@ -414,8 +426,8 @@ void parse_config(const cJSON* config, cJSON* data_root, char* base_url, char* a
     }
     // 获取base_url和api_key
     if (cJSON_HasObjectItem(sel_provider, "base_url")) {
-        base_url = strndup(cJSON_GetObjectItem(sel_provider, "base_url")->valuestring, 1024);
-        if(!base_url) {
+        *base_url = strndup(cJSON_GetObjectItem(sel_provider, "base_url")->valuestring, 1024);
+        if(!(*base_url)) {
             perror("allocation for base url failed!");
             exit(1);
         }
@@ -427,8 +439,8 @@ void parse_config(const cJSON* config, cJSON* data_root, char* base_url, char* a
         exit(1);
     }
     if (cJSON_HasObjectItem(sel_provider, "api_key")) {
-        api_key = strndup(cJSON_GetObjectItem(sel_provider, "api_key")->valuestring, 256);
-        if(!api_key) {
+        *api_key = strndup(cJSON_GetObjectItem(sel_provider, "api_key")->valuestring, 256);
+        if(!(*api_key)) {
             perror("allocation for api key failed!");
             exit(1);
         }
@@ -452,23 +464,23 @@ void parse_config(const cJSON* config, cJSON* data_root, char* base_url, char* a
         exit(1);
     }
     if (cJSON_HasObjectItem(config, "model_choice")) {
-        model_choice = cJSON_GetObjectItem(config, "model_choice")->valuestring;
+        *model_choice = cJSON_GetObjectItem(config, "model_choice")->valuestring;
     } else {
         perror("no model choice found!");
         exit(1);
     }
     char* sel_model = NULL;
-    if (cJSON_HasObjectItem(model, model_choice)) {
-        sel_model = strndup(cJSON_GetObjectItem(model, model_choice)->valuestring, 256);
+    if (cJSON_HasObjectItem(model, *model_choice)) {
+        sel_model = strndup(cJSON_GetObjectItem(model, *model_choice)->valuestring, 256);
     } else {
         perror("no model choice found!");
         exit(1);
     }
     // 获取prompt
     if (cJSON_HasObjectItem(config, "prompt")) {
-        prompt = strndup(cJSON_GetObjectItem(config, "prompt")->valuestring, 2048);
+        *prompt = strndup(cJSON_GetObjectItem(config, "prompt")->valuestring, 2048);
     } else {
-        prompt = NULL;
+        *prompt = NULL;
     }
     // 获取thinking type
     char* thinking_type = NULL;
@@ -538,7 +550,9 @@ void parse_config(const cJSON* config, cJSON* data_root, char* base_url, char* a
     cJSON* thinking = cJSON_CreateObject();
     cJSON_AddStringToObject(thinking, "type", thinking_type);
     cJSON_AddItemToObject(data_root, "thinking", thinking);
-    cJSON_AddStringToObject(data_root, "reasoning_effort", reasoning_effort);
+    if(strcmp(thinking_type, "enabled")==0) {
+        cJSON_AddStringToObject(data_root, "reasoning_effort", reasoning_effort);
+    }
     cJSON_AddNumberToObject(data_root, "max_tokens", max_tokens);
     cJSON_AddNumberToObject(data_root, "temperature", temperature);
     cJSON_AddBoolToObject(data_root, "stream", stream);
@@ -628,7 +642,7 @@ int main(int argc, char **argv)
             case 'q':
                 question = strdup(optarg);
                 break;
-            case 'V':
+            case 'v':
                 cJSON* provider_choice = cJSON_GetObjectItem(config, "provider_choice");
                 if (provider_choice) {
                     cJSON_SetValuestring(provider_choice, strdup(optarg));
@@ -744,10 +758,11 @@ int main(int argc, char **argv)
     mem.reply_size = 0;
     mem.think_start_flag = 0;   // 1表示还未进入回答callback
     mem.think_end_flag = 0;
+    mem.direct_chat_flag = strlen(final_msg)==0;
     if(help_flag) {
         show_help();
     } else {
-        if(chat_flag){
+        if(chat_flag || mem.direct_chat_flag){
             ask_for_chat(config, final_msg, &mem);
         } else {
             ask_one_shot(config, final_msg, &mem);
