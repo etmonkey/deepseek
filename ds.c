@@ -10,6 +10,8 @@
 #define MAX_CONTEXT_SIZE 1024*1024
 #define MAX_MSG_FACTOR 0.7
 
+enum prompt_res_enum {SUCCESS, BREAK, GOTOPROMPT, SKIP};
+
 void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
 
 struct Memory {
@@ -34,6 +36,32 @@ int rstrip(char *str) {
 
     str[end+1] = '\0';
     return end + 1;
+}
+
+char* strip(char *str) {
+    if (str == NULL || *str == '\0')
+    {
+        char *res = (char *)malloc(sizeof(char));
+        *res = '\0';
+        return res;
+    }
+
+    char *end = str + strlen(str) - 1;
+    // 去掉末尾空格
+    while (isspace((unsigned char)(*end)))
+    {
+        end--;
+    }
+    // 去掉开头空格
+    while (isspace((unsigned char)(*str)))
+    {
+        str++;
+    }
+    char *res = (char *)malloc(sizeof(char) * (end - str + 2));
+    strncpy(res, str, end - str + 1);
+    res[end - str + 1] = '\0';
+
+    return res;
 }
 
 // 回调函数：将接收到的数据存储到 Memory 结构体中
@@ -251,6 +279,245 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
 }
 
 /**
+ * 从文件加载对话
+ */
+enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
+    FILE *fp = fopen(filepath, "r");
+    if (fp) {
+        // 获取文件大小
+        fseek(fp, 0, SEEK_END);
+        long file_size = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        char *content = (char*)malloc(file_size + 1);
+        if (content == NULL) {
+            perror("memory allocation failed");
+            fclose(fp);
+            return GOTOPROMPT;
+        }
+        size_t bytes_read = fread(content, 1, file_size, fp);
+        if (bytes_read != file_size) {
+            perror("read file failed!");
+            free(content);
+            fclose(fp);
+            return GOTOPROMPT;
+        }
+        content[file_size] = '\0';
+        fclose(fp);
+        // 用cJson解析
+        cJSON *root = cJSON_Parse(content);
+        free(content);
+        if (root == NULL) {
+            perror("json parse error!");
+        }
+        free(pmem->data);
+        free(pmem->reply);
+        for(int i=0; i<pmem->chat_arr_size; i++) {
+            free((pmem->chat_arr)[i]);
+        }
+        cJSON *think_start_flag = cJSON_GetObjectItemCaseSensitive(root, "think_start_flag");
+        cJSON *think_end_flag = cJSON_GetObjectItemCaseSensitive(root, "think_end_flag");
+        cJSON *direct_chat_flag = cJSON_GetObjectItemCaseSensitive(root, "direct_chat_flag");
+        cJSON *chat_arr_size = cJSON_GetObjectItemCaseSensitive(root, "chat_arr_size");
+        cJSON *chat_arr = cJSON_GetObjectItemCaseSensitive(root, "chat_arr");
+        pmem->think_start_flag = think_start_flag->valueint;
+        pmem->think_end_flag = think_end_flag->valueint;
+        pmem->direct_chat_flag = direct_chat_flag->valueint;
+        pmem->chat_arr_size = chat_arr_size->valueint;
+        pmem->data = strndup("", 0);
+        pmem->reply = strndup("", 0);
+        char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size));
+        if(chat_arr_temp) {
+            pmem->chat_arr = chat_arr_temp;
+            for(int i=0; i<pmem->chat_arr_size; i++) {
+                cJSON *chat_arr_item = cJSON_GetArrayItem(chat_arr, i);
+                (pmem->chat_arr)[i] = strndup(chat_arr_item->valuestring, strlen(chat_arr_item->valuestring));
+            }
+        } else {
+            perror("allocating chat array memory failed");
+            exit(1);
+        }
+        cJSON_Delete(root);
+    } else {
+        perror("open file error!");
+        return GOTOPROMPT;
+    }
+    return SKIP;
+}
+
+/**
+ * 将当前对话保存到文件
+ */
+enum prompt_res_enum save_mem(char* filepath, const struct Memory *pmem) {
+    cJSON *root = cJSON_CreateObject();
+    
+    cJSON_AddNumberToObject(root, "think_start_flag", pmem->think_start_flag);
+    cJSON_AddNumberToObject(root, "think_end_flag", pmem->think_end_flag);
+    cJSON_AddNumberToObject(root, "direct_chat_flag", pmem->direct_chat_flag);
+    // cJSON_AddNumberToObject(root, "size", pmem->size);
+    // cJSON_AddNumberToObject(root, "reply_size", pmem->reply_size);
+    cJSON_AddNumberToObject(root, "chat_arr_size", pmem->chat_arr_size);
+    // cJSON_AddStringToObject(root, "data", pmem->data ? pmem->data : "");
+    // cJSON_AddStringToObject(root, "reply", pmem->reply ? pmem->reply : "");
+    
+    cJSON *chat = cJSON_AddArrayToObject(root, "chat_arr");
+    for (size_t i = 0; i < pmem->chat_arr_size; i++) {
+        cJSON_AddItemToArray(chat, cJSON_CreateString(pmem->chat_arr[i]));
+    }
+    
+    char *json_str = cJSON_Print(root);
+    cJSON_Delete(root);
+    
+    FILE *fp = fopen(filepath, "w");
+    if (!fp) {
+        perror("open file path error!");
+        free(json_str);
+        return GOTOPROMPT;
+    }
+    fprintf(fp, "%s", json_str);
+    fclose(fp);
+    free(json_str);
+    return SKIP;
+}
+
+/**
+ * 确保文件路径存在，不存在则创建
+ */
+int ensure_path(const char *filepath) {
+    if (!filepath || !*filepath) return -1;
+    
+    // 1. 提取目录路径
+    char path[1024];
+    strcpy(path, filepath);
+    char *p = strrchr(path, '/');
+    if (!p) return 0;  // 没有目录，直接创建文件
+    
+    *p = '\0';
+    
+    // 2. 递归创建目录
+    char *ptr = path;
+    while ((ptr = strchr(ptr, '/')) != NULL) {
+        *ptr = '\0';
+        mkdir(path, 0755);  // 忽略错误（目录可能已存在）
+        *ptr = '/';
+        ptr++;
+    }
+    mkdir(path, 0755);
+    
+    // 3. 创建文件
+    FILE *fp = fopen(filepath, "w");
+    if (fp) {
+        fclose(fp);
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * 与用户交互
+ */
+enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
+    printf(">");
+    if (!isatty(fileno(stdin)))
+    {
+        fclose(stdin);
+        stdin = fopen("/dev/tty", "r");
+        if (stdin == NULL)
+        {
+            perror("can not open terminal");
+            exit(1);
+        }
+    }
+    char *buffer = NULL;
+    size_t len = 0;
+    ssize_t read = getline(&buffer, &len, stdin); // 读取一行
+    if (read != -1) {
+        // 去掉换行符（如果存在）
+        if (buffer[read - 1] == '\n')
+        {
+            buffer[read - 1] = '\0';
+        }
+    } else
+    {
+        perror("read question buffer error!");
+        exit(1);
+    }
+    char *cmd = strip(buffer);
+    char *token = strtok(cmd, " \t\n\r\f\v");
+    if (token != NULL)
+    {
+        if (strcmp(token, "/bye") == 0) {
+            free(cmd);
+            free(buffer);
+            return BREAK;
+        } else if (strcmp(token, "/save") == 0) {
+            char* token1 = strtok(NULL, " \t\n\r\f\v");
+            if (token1) {
+                const char *home_dir = getenv("HOME");
+                if (home_dir == NULL) {
+                    perror("Error: HOME environment variable not set.");
+                    exit(1);
+                }
+                char* filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+strlen(token1)+16));
+                snprintf(filepath, strlen(home_dir)+strlen(token1)+16, "%s/.ds/save/%s%s", home_dir, token1, ".save");
+                if(ensure_path(filepath)==1) {
+                    perror("generate save file failed!");
+                    free(cmd);
+                    free(buffer);
+                    return GOTOPROMPT;
+                }
+                enum prompt_res_enum res = save_mem(filepath, pmem);
+                if(res != SKIP) {
+                    free(cmd);
+                    free(buffer);
+                    free(filepath);
+                    return res;
+                }
+                printf("chat memery saved to %s\n", filepath);
+                free(filepath);
+            } else {
+                printf("usage: /save [filename]\n");
+            }
+            free(cmd);
+            free(buffer);
+            return GOTOPROMPT;
+        } else if(strcmp(token, "/load") == 0) {
+            char* token1 = strtok(NULL, " \t\n\r\f\v");
+            if (token1) {
+                const char *home_dir = getenv("HOME");
+                if (home_dir == NULL) {
+                    perror("Error: HOME environment variable not set.");
+                    exit(1);
+                }
+                char* filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+strlen(token1)+16));
+                snprintf(filepath, strlen(home_dir)+strlen(token1)+16, "%s/.ds/save/%s%s", home_dir, token1, ".save");
+                enum prompt_res_enum res = load_mem(filepath, pmem);
+                free(filepath);
+                if(res != SKIP) {
+                    free(cmd);
+                    free(buffer);
+                    return res;
+                }
+                printf("chat memery loaded\n");
+            } else {
+                printf("usage: /load [filename]\n");
+            }
+            free(cmd);
+            free(buffer);
+            return GOTOPROMPT;
+        }
+    }
+    *final_msg = strndup(buffer, MAX_CONTEXT_SIZE * MAX_MSG_FACTOR);
+    if (!(*final_msg))
+    {
+        perror("allocating memory error!");
+        exit(1);
+    }
+    free(buffer);
+
+    return SUCCESS;
+}
+
+/**
  * 对话式询问
  */
 int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
@@ -322,38 +589,10 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
         }
 
 chat_prompt:
-        printf(">");
-        if (!isatty(fileno(stdin))) {
-            fclose(stdin);
-            stdin = fopen("/dev/tty", "r");
-            if (stdin == NULL) {
-                perror("can not open terminal");
-                return 1;
-            }
-        }
-        char* buffer = NULL;
-        size_t len = 0;
-        ssize_t read = getline(&buffer, &len, stdin); // 读取一行
-        if (read != -1) {
-            // 去掉换行符（如果存在）
-            if (buffer[read - 1] == '\n') {
-                buffer[read - 1] = '\0';
-            }
-        } else {
-            perror("read question buffer error!");
-            return 1;
-        }
-        if(strcmp(buffer, "/bye")==0) {
-            free(buffer);
-            break;
-        }
-        
-        final_msg = strndup(buffer, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
-        if(!final_msg) {
-            perror("allocating memory error!");
-            exit(1);
-        }
-        free(buffer);
+        int prompt_res = chat_prompt(&final_msg, pmem);
+        if(prompt_res == BREAK) break;
+        else if(prompt_res == GOTOPROMPT) goto chat_prompt;
+        else if(prompt_res == SUCCESS) continue;
     }
 
     cJSON_Delete(data_root);
@@ -562,11 +801,20 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
 }
 
 cJSON* read_config() {
-    FILE *file = fopen("/etc/deepseek/config.json", "r");
+    const char *home_dir = getenv("HOME");
+    if (home_dir == NULL) {
+        perror("Error: HOME environment variable not set.\n");
+        exit(1);
+    }
+    char* filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+17));
+    snprintf(filepath, strlen(home_dir)+17, "%s/.ds/config.json", home_dir);
+    FILE *file = fopen(filepath, "r");
     if(file == NULL) {
+        free(filepath);
         perror("no config file!");
         exit(1);
     }
+    free(filepath);
 
     // 获取文件大小
     fseek(file, 0, SEEK_END);
@@ -751,10 +999,12 @@ int main(int argc, char **argv)
     // 与deepseek对话
     struct Memory mem;
     mem.data = (char*)malloc(1);  // 初始分配
+    mem.data[0] = '\0';
     mem.size = 0;
     mem.chat_arr = (char**)malloc(sizeof(char*));
     mem.chat_arr_size = 0;
     mem.reply = (char*)malloc(1);
+    mem.reply[0] = '\0';
     mem.reply_size = 0;
     mem.think_start_flag = 0;   // 1表示还未进入回答callback
     mem.think_end_flag = 0;
