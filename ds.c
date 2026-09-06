@@ -506,6 +506,10 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
             return GOTOPROMPT;
         }
     }
+    if(*final_msg) {
+        free(*final_msg);
+        *final_msg = NULL;
+    }
     *final_msg = strndup(buffer, MAX_CONTEXT_SIZE * MAX_MSG_FACTOR);
     if (!(*final_msg))
     {
@@ -513,6 +517,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
         exit(1);
     }
     free(buffer);
+    free(cmd);
 
     return SUCCESS;
 }
@@ -520,7 +525,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
 /**
  * 对话式询问
  */
-int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
+int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
     cJSON* data_root = cJSON_CreateObject();
     char** base_url = (char**) malloc(sizeof(char*));
     char** api_key = (char**) malloc(sizeof(char*));
@@ -544,12 +549,13 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
             pmem->direct_chat_flag = 0;
             goto chat_prompt;
         }
-        char* dup_msg = strndup(final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
+        char* dup_msg = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
         if(dup_msg) {
             cJSON* msg_nested_object = cJSON_CreateObject();
             cJSON_AddStringToObject(msg_nested_object, "role", "user");
             cJSON_AddStringToObject(msg_nested_object, "content", dup_msg);
             cJSON_AddItemToArray(msg_jarr, msg_nested_object);
+            free(dup_msg);
         } else {
             perror("allocating memory error!");
             exit(1);
@@ -564,6 +570,7 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
             cJSON_AddStringToObject(reply_nested_objects, "role", "assistant");
             cJSON_AddStringToObject(reply_nested_objects, "content", dup_reply);
             cJSON_AddItemToArray(msg_jarr, reply_nested_objects);
+            free(dup_reply);
         } else {
             perror("allocating memory error!");
             exit(1);
@@ -572,7 +579,7 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
         char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size+2));
         if(chat_arr_temp) {
             pmem->chat_arr = chat_arr_temp;
-            char* final_msg_temp = strndup(final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
+            char* final_msg_temp = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
             char* reply_temp = strndup(pmem->reply, MAX_CONTEXT_SIZE);
             if(final_msg_temp && reply_temp) {
                 pmem->reply_size = 0;
@@ -589,20 +596,28 @@ int ask_for_chat(cJSON* config, char* final_msg, struct Memory* pmem) {
         }
 
 chat_prompt:
-        int prompt_res = chat_prompt(&final_msg, pmem);
+        int prompt_res = chat_prompt(final_msg, pmem);
         if(prompt_res == BREAK) break;
         else if(prompt_res == GOTOPROMPT) goto chat_prompt;
         else if(prompt_res == SUCCESS) continue;
     }
 
     cJSON_Delete(data_root);
+    free(*base_url);
+    free(*api_key);
+    free(*str_prompt);
+    free(*model_choice);
+    free(base_url);
+    free(api_key);
+    free(str_prompt);
+    free(model_choice);
     return 0;
 }
 
 /**
  * 单次询问
  */
-int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
+int ask_one_shot(cJSON* config, char** final_msg, struct Memory* pmem) {
     cJSON* data_root = cJSON_CreateObject();
     char** base_url = (char**) malloc(sizeof(char*));
     char** api_key = (char**) malloc(sizeof(char*));
@@ -620,7 +635,7 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
     }
     nested_object = cJSON_CreateObject();
     cJSON_AddStringToObject(nested_object, "role", "user");
-    cJSON_AddStringToObject(nested_object, "content", final_msg);
+    cJSON_AddStringToObject(nested_object, "content", *final_msg);
     cJSON_AddItemToArray(msg_jarr, nested_object);
 
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
@@ -628,6 +643,10 @@ int ask_one_shot(cJSON* config, char* final_msg, struct Memory* pmem) {
     ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
 
     cJSON_Delete(data_root);
+    free(*base_url);
+    free(*api_key);
+    free(*str_prompt);
+    free(*model_choice);
     free(base_url);
     free(api_key);
     free(str_prompt);
@@ -703,7 +722,7 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
         exit(1);
     }
     if (cJSON_HasObjectItem(config, "model_choice")) {
-        *model_choice = cJSON_GetObjectItem(config, "model_choice")->valuestring;
+        *model_choice = strndup(cJSON_GetObjectItem(config, "model_choice")->valuestring, 256);
     } else {
         perror("no model choice found!");
         exit(1);
@@ -798,6 +817,10 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
     cJSON* stream_options = cJSON_CreateObject();
     cJSON_AddBoolToObject(stream_options, "include_usage", include_usage);
     cJSON_AddItemToObject(data_root, "stream_options", stream_options);
+
+    free(sel_model);
+    free(thinking_type);
+    free(reasoning_effort);
 }
 
 cJSON* read_config() {
@@ -1013,9 +1036,9 @@ int main(int argc, char **argv)
         show_help();
     } else {
         if(chat_flag || mem.direct_chat_flag){
-            ask_for_chat(config, final_msg, &mem);
+            ask_for_chat(config, &final_msg, &mem);
         } else {
-            ask_one_shot(config, final_msg, &mem);
+            ask_one_shot(config, &final_msg, &mem);
         }
     }
     cJSON_Delete(config);
