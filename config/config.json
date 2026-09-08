@@ -25,6 +25,7 @@
         }
     },
     "model_choice": "flash",
+    "tool_choice": "none",
     "prompt":  "请使用中文回答",
     "thinking": "disabled",
     "reasoning_effort": "high",

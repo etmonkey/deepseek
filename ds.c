@@ -5,7 +5,8 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "cjson/cJSON.h"
+#include <cjson/cJSON.h>
+#include "tool_calls.h"
 
 #define MAX_CONTEXT_SIZE 1024*1024
 #define MAX_MSG_FACTOR 0.7
@@ -17,13 +18,13 @@ void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
 struct Memory {
     char* data;         // 返回的数据块
     char* reply;        // 回答的字符串
-    char** chat_arr;    // 对话历史
+    char** msg_arr;    // 对话历史
     int think_start_flag;   // 思考数据块开始标志
     int think_end_flag;     // 思考数据块结束标志
     int direct_chat_flag;   // 是否直接进入对话模式
     size_t size;
     size_t reply_size;
-    size_t chat_arr_size;   // 对话长度
+    size_t msg_arr_size;   // 对话长度
 };
 
 int rstrip(char *str) {
@@ -311,26 +312,26 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         }
         free(pmem->data);
         free(pmem->reply);
-        for(int i=0; i<pmem->chat_arr_size; i++) {
-            free((pmem->chat_arr)[i]);
+        for(int i=0; i<pmem->msg_arr_size; i++) {
+            free((pmem->msg_arr)[i]);
         }
         cJSON *think_start_flag = cJSON_GetObjectItemCaseSensitive(root, "think_start_flag");
         cJSON *think_end_flag = cJSON_GetObjectItemCaseSensitive(root, "think_end_flag");
         cJSON *direct_chat_flag = cJSON_GetObjectItemCaseSensitive(root, "direct_chat_flag");
-        cJSON *chat_arr_size = cJSON_GetObjectItemCaseSensitive(root, "chat_arr_size");
-        cJSON *chat_arr = cJSON_GetObjectItemCaseSensitive(root, "chat_arr");
+        cJSON *msg_arr_size = cJSON_GetObjectItemCaseSensitive(root, "msg_arr_size");
+        cJSON *msg_arr = cJSON_GetObjectItemCaseSensitive(root, "msg_arr");
         pmem->think_start_flag = think_start_flag->valueint;
         pmem->think_end_flag = think_end_flag->valueint;
         pmem->direct_chat_flag = direct_chat_flag->valueint;
-        pmem->chat_arr_size = chat_arr_size->valueint;
+        pmem->msg_arr_size = msg_arr_size->valueint;
         pmem->data = strndup("", 0);
         pmem->reply = strndup("", 0);
-        char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size));
-        if(chat_arr_temp) {
-            pmem->chat_arr = chat_arr_temp;
-            for(int i=0; i<pmem->chat_arr_size; i++) {
-                cJSON *chat_arr_item = cJSON_GetArrayItem(chat_arr, i);
-                (pmem->chat_arr)[i] = strndup(chat_arr_item->valuestring, strlen(chat_arr_item->valuestring));
+        char** msg_arr_temp = (char**)realloc(pmem->msg_arr, sizeof(char*)*(pmem->msg_arr_size));
+        if(msg_arr_temp) {
+            pmem->msg_arr = msg_arr_temp;
+            for(int i=0; i<pmem->msg_arr_size; i++) {
+                cJSON *chat_arr_item = cJSON_GetArrayItem(msg_arr, i);
+                (pmem->msg_arr)[i] = strndup(chat_arr_item->valuestring, strlen(chat_arr_item->valuestring));
             }
         } else {
             perror("allocating chat array memory failed");
@@ -355,13 +356,13 @@ enum prompt_res_enum save_mem(char* filepath, const struct Memory *pmem) {
     cJSON_AddNumberToObject(root, "direct_chat_flag", pmem->direct_chat_flag);
     // cJSON_AddNumberToObject(root, "size", pmem->size);
     // cJSON_AddNumberToObject(root, "reply_size", pmem->reply_size);
-    cJSON_AddNumberToObject(root, "chat_arr_size", pmem->chat_arr_size);
+    cJSON_AddNumberToObject(root, "msg_arr_size", pmem->msg_arr_size);
     // cJSON_AddStringToObject(root, "data", pmem->data ? pmem->data : "");
     // cJSON_AddStringToObject(root, "reply", pmem->reply ? pmem->reply : "");
     
-    cJSON *chat = cJSON_AddArrayToObject(root, "chat_arr");
-    for (size_t i = 0; i < pmem->chat_arr_size; i++) {
-        cJSON_AddItemToArray(chat, cJSON_CreateString(pmem->chat_arr[i]));
+    cJSON *chat = cJSON_AddArrayToObject(root, "msg_arr");
+    for (size_t i = 0; i < pmem->msg_arr_size; i++) {
+        cJSON_AddItemToArray(chat, cJSON_CreateString(pmem->msg_arr[i]));
     }
     
     char *json_str = cJSON_Print(root);
@@ -504,6 +505,18 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
             free(cmd);
             free(buffer);
             return GOTOPROMPT;
+        } else if(strcmp(token, "/print") == 0) {
+            char* token1 = strtok(NULL, " \t\n\r\f\v");
+            if (token1 && strcmp(token1, "history")==0) {
+                for(int i=0; i<pmem->msg_arr_size; i++) {
+                    printf("%s\n", (pmem->msg_arr)[i]);
+                }
+            } else {
+                printf("usage: /print history\n");
+            }
+            free(cmd);
+            free(buffer);
+            return GOTOPROMPT;
         }
     }
     if(*final_msg) {
@@ -576,9 +589,9 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
             exit(1);
         }
 
-        char** chat_arr_temp = (char**)realloc(pmem->chat_arr, sizeof(char*)*(pmem->chat_arr_size+2));
-        if(chat_arr_temp) {
-            pmem->chat_arr = chat_arr_temp;
+        char** msg_arr_temp = (char**)realloc(pmem->msg_arr, sizeof(char*)*(pmem->msg_arr_size+2));
+        if(msg_arr_temp) {
+            pmem->msg_arr = msg_arr_temp;
             char* final_msg_temp = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
             char* reply_temp = strndup(pmem->reply, MAX_CONTEXT_SIZE);
             if(final_msg_temp && reply_temp) {
@@ -587,11 +600,11 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
                 perror("allocating memory error!");
                 exit(1);
             }
-            pmem->chat_arr[pmem->chat_arr_size] = final_msg_temp;
-            pmem->chat_arr[pmem->chat_arr_size+1] = reply_temp;
-            pmem->chat_arr_size += 2;
+            pmem->msg_arr[pmem->msg_arr_size] = final_msg_temp;
+            pmem->msg_arr[pmem->msg_arr_size+1] = reply_temp;
+            pmem->msg_arr_size += 2;
         } else {
-            perror("allocating chat array memory failed");
+            perror("allocating message array memory failed");
             exit(1);
         }
 
@@ -652,6 +665,53 @@ int ask_one_shot(cJSON* config, char** final_msg, struct Memory* pmem) {
     free(str_prompt);
     free(model_choice);
     return 0;
+}
+
+/**
+ * 读取tools calls配置文件
+ */
+cJSON* read_tools() {
+    const char *home_dir = getenv("HOME");
+    if (home_dir == NULL) {
+        perror("Error: HOME environment variable not set.\n");
+        exit(1);
+    }
+    char* filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+21));
+    snprintf(filepath, strlen(home_dir)+21, "%s/.ds/tool_calls.json", home_dir);
+    FILE *file = fopen(filepath, "r");
+    if(file == NULL) {
+        free(filepath);
+        perror("no tool calls config file found!");
+        exit(1);
+    }
+    free(filepath);
+
+    // 获取文件大小
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // 分配内存并读取文件内容
+    char *json_data = malloc(file_size + 1);
+    if (!json_data) {
+        perror("memory allocation failed!");
+        fclose(file);
+        return NULL;
+    }
+    fread(json_data, 1, file_size, file);
+    json_data[file_size] = '\0'; // 添加字符串终止符
+
+    // 解析 JSON 数据
+    cJSON *json = cJSON_Parse(json_data);
+    if (!json) {
+        printf("resolving json failed: %s\n", cJSON_GetErrorPtr());
+        free(json_data);
+        exit(1);
+    }
+
+    fclose(file);
+    free(json_data);
+    return json;
 }
 
 /**
@@ -804,6 +864,24 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
     }
 
     // 构造JSON
+    // 获取tool calls的json
+    if(cJSON_HasObjectItem(config, "tool_choice")) {
+        cJSON* tool_calls = read_tools();
+        cJSON* tool_choice_item = cJSON_GetObjectItem(config, "tool_choice");
+        if(tool_choice_item && cJSON_IsString(tool_choice_item)) {
+            if(strcmp(tool_choice_item->valuestring, "none")==0) {
+
+            } else if(strcmp(tool_choice_item->valuestring, "auto")==0 ||
+                    strcmp(tool_choice_item->valuestring, "required")==0) {
+                cJSON_AddItemToObject(data_root, "tools", tool_calls);
+                cJSON_AddStringToObject(data_root, "tool_choice", strdup(tool_choice_item->valuestring));
+            } else {
+                perror("no legacy tool choice!");
+                exit(1);
+            }
+        }
+    }
+
     cJSON_AddStringToObject(data_root, "model", sel_model);
     cJSON* thinking = cJSON_CreateObject();
     cJSON_AddStringToObject(thinking, "type", thinking_type);
@@ -823,6 +901,9 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
     free(reasoning_effort);
 }
 
+/**
+ * 读取deepseek配置参数
+ */
 cJSON* read_config() {
     const char *home_dir = getenv("HOME");
     if (home_dir == NULL) {
@@ -875,12 +956,13 @@ void show_help() {
     printf("args: \n");
     printf("\t-h: show help\n");
     printf("\t-c: chat mode\n");
+    printf("\t-t: use tool calls n(none, default)/a(auto)/r(required)\n");
     printf("\t-p: add prompt\n");
     printf("\t-q: add to question\n");
     printf("\t-v: choose deepseek provider\n");
     printf("\t-m: choose deepseek model flash(default)/pro/v3/r1\n");
-    printf("\t-e: choose reasoning effort\n");
-    printf("\t-t: set temperature(0~2), higher for more random result\n");
+    printf("\t-r: choose reasoning effort\n");
+    printf("\t-e: set temperature(0~2), higher for more random result\n");
     printf("\t-o: max output tokens(max 384K)\n");
     printf("\t-k: set thinking mode enabled\n");
     printf("\t-u: set outputing usage\n");
@@ -894,13 +976,40 @@ int main(int argc, char **argv)
     int help_flag = 0;
     cJSON* config = read_config();
     char* question = NULL;
-    while ((opt = getopt(argc, argv, "hcp:q:v:m:e:t:o:ku")) != -1) {
+    while ((opt = getopt(argc, argv, "hct:p:q:v:m:r:e:o:ku")) != -1) {
         switch(opt) {
             case 'h':
                 help_flag = 1;
                 break;
             case 'c':
                 chat_flag = 1;
+                break;
+            case 't':
+                if(strlen(optarg)>1) {
+                    perror("tool calls argument error!");
+                    exit(1);
+                }
+                char tool_choice_val[10];
+                switch (optarg[0]) {
+                    case 'n':
+                        strncpy(tool_choice_val, "none", sizeof(tool_choice_val)-1);
+                        break;
+                    case 'a':
+                        strncpy(tool_choice_val, "auto", sizeof(tool_choice_val)-1);
+                        break;
+                    case 'r':
+                        strncpy(tool_choice_val, "required", sizeof(tool_choice_val)-1);
+                        break;
+                    default:
+                        perror("tool calls argument error!");
+                        exit(1);
+                }
+                cJSON* tool_choice = cJSON_GetObjectItem(config, "tool_choice");
+                if(tool_choice) {
+                    cJSON_SetValuestring(tool_choice, strdup(tool_choice_val));
+                } else {
+                    cJSON_AddStringToObject(config, "tool_choice", strdup(tool_choice_val));
+                }
                 break;
             case 'p':
                 cJSON* prompt = cJSON_GetObjectItem(config, "prompt");
@@ -929,7 +1038,7 @@ int main(int argc, char **argv)
                     cJSON_AddStringToObject(config, "model_choice", strdup(optarg));
                 }
                 break;
-            case 'e':
+            case 'r':
                 cJSON* reasoning_effort = cJSON_GetObjectItem(config, "reasoning_effort");
                 if (reasoning_effort) {
                     cJSON_SetValuestring(reasoning_effort, strdup(optarg));
@@ -937,20 +1046,31 @@ int main(int argc, char **argv)
                     cJSON_AddStringToObject(config, "reasoning_effort", strdup(optarg));
                 }
                 break;
-            case 't':
+            case 'e':
                 cJSON* temperature = cJSON_GetObjectItem(config, "temperature");
+                char *endptr;
+                double temperature_val = strtod(optarg, &endptr);
+                if (*endptr != '\0') {
+                    perror("no legacy temperature value!");
+                    exit(1);
+                }
                 if (temperature) {
-                    cJSON_SetValuestring(temperature, strdup(optarg));
+                    cJSON_SetNumberValue(temperature, temperature_val);
                 } else {
-                    cJSON_AddStringToObject(config, "temperature", strdup(optarg));
+                    cJSON_AddNumberToObject(config, "temperature", temperature_val);
                 }
                 break;
             case 'o':
                 cJSON* max_tokens = cJSON_GetObjectItem(config, "max_tokens");
+                long max_tokens_val = strtol(optarg, &endptr, 10);
+                if (*endptr != '\0') {
+                    perror("no legacy max_tokens value!");
+                    exit(1);
+                }
                 if (max_tokens) {
-                    cJSON_SetValuestring(max_tokens, strdup(optarg));
+                    cJSON_SetNumberValue(max_tokens, max_tokens_val);
                 } else {
-                    cJSON_AddStringToObject(config, "max_tokens", strdup(optarg));
+                    cJSON_AddNumberToObject(config, "max_tokens", max_tokens_val);
                 }
                 break;
             case 'k':
@@ -1024,8 +1144,8 @@ int main(int argc, char **argv)
     mem.data = (char*)malloc(1);  // 初始分配
     mem.data[0] = '\0';
     mem.size = 0;
-    mem.chat_arr = (char**)malloc(sizeof(char*));
-    mem.chat_arr_size = 0;
+    mem.msg_arr = (char**)malloc(sizeof(char*));
+    mem.msg_arr_size = 0;
     mem.reply = (char*)malloc(1);
     mem.reply[0] = '\0';
     mem.reply_size = 0;
@@ -1045,9 +1165,9 @@ int main(int argc, char **argv)
     free(final_msg);
     free(mem.data);
     free(mem.reply);
-    for(int i=0; i<mem.chat_arr_size; i++) {
-        free(mem.chat_arr[i]);
+    for(int i=0; i<mem.msg_arr_size; i++) {
+        free(mem.msg_arr[i]);
     }
-    free(mem.chat_arr);
+    free(mem.msg_arr);
     return 0;
 }

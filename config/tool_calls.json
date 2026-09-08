@@ -1,0 +1,14 @@
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_cwd",
+            "description": "Get current working directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }
+]
