@@ -22,10 +22,15 @@ struct Memory {
     int think_start_flag;   // 思考数据块开始标志
     int think_end_flag;     // 思考数据块结束标志
     int direct_chat_flag;   // 是否直接进入对话模式
-    size_t size;
-    size_t reply_size;
-    size_t msg_arr_size;   // 对话长度
+    size_t size;            // 返回的数据块长度
+    size_t reply_size;      // 回答的字符串长度
+    size_t msg_arr_size;    // 对话长度
 };
+
+struct GlobalVar {
+    int start_idx;  // 解析返回的数据块开始位置
+    int end_idx;    // 解析返回的数据块结束位置
+} glob_var;
 
 int rstrip(char *str) {
     int end = strlen(str) - 1;
@@ -65,7 +70,9 @@ char* strip(char *str) {
     return res;
 }
 
-// 回调函数：将接收到的数据存储到 Memory 结构体中
+/**
+ * 将接收到的数据存储到 Memory 结构体中的回调函数
+ */
 size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total_size = size * nmemb;
     struct Memory *mem = (struct Memory *)userdata;
@@ -74,7 +81,7 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     char *temp = realloc(mem->data, mem->size + total_size + 1);
     if (temp == NULL) {
         printf("Not enough memory\n");
-        return 1;
+        return -1;
     }
 
     mem->data = temp;
@@ -85,8 +92,11 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     return total_size;  // 必须返回接收的字节数，否则会终止传输
 }
 
-// 流式数据回调函数
-static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+/**
+ * 流式数据回调函数
+ * @ret 失败返回-1，成功返回total_size
+ */
+size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total_size = size * nmemb;
     struct Memory *pmem = (struct Memory *)userdata;
 
@@ -94,7 +104,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
     char *temp = realloc(pmem->data, pmem->size + total_size + 1);
     if (temp == NULL) {
         printf("Not enough memory\n");
-        return 1;
+        return -1;
     }
 
     pmem->data = temp;
@@ -107,18 +117,23 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
     char* line = NULL;
     char* end = NULL;
     // printf("line: %s\n", line);
-    static int start_idx = 0;
-    static int end_idx = 0;
-    while((line = strstr(all_line + start_idx, "data: "))) {
+    while((line = strstr(all_line + glob_var.start_idx, "data: "))) {
         line += 6; // 跳过 "data: "
         end = strchr(line, '\n');
         if(!end) break;
-        start_idx = line - all_line;
-        end_idx = end - all_line;
-        char* json_str = strndup(all_line + start_idx, end_idx - start_idx);
+        glob_var.start_idx = line - all_line;
+        glob_var.end_idx = end - all_line;
+        char* json_str = strndup(all_line + glob_var.start_idx, glob_var.end_idx - glob_var.start_idx);
 
         if(strcmp(json_str, "[DONE]")==0) {
             printf("\n");
+            free(json_str);
+            free(pmem->data);
+            glob_var.start_idx = 0;
+            glob_var.end_idx = 0;
+            pmem->data = NULL;
+            pmem->size = 0;
+            return total_size;
         }
         cJSON *root = cJSON_Parse(json_str);
         if(root) {
@@ -129,7 +144,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                 printf("error requesting data, error code: %s\n", error_code);
                 printf("error message: %s\n", error_msg);
                 cJSON_Delete(root);
-                return 1;
+                return -1;
             }
             if (cJSON_HasObjectItem(root, "choices")) {
                 cJSON *choices = cJSON_GetObjectItem(root, "choices");
@@ -155,7 +170,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                                     char *reply_temp = realloc(pmem->reply, pmem->reply_size + content_size + 1);
                                     if(reply_temp == NULL) {
                                         printf("Not enough memory\n");
-                                        return 1;
+                                        return -1;
                                     }
                                     pmem->reply = reply_temp;
                                     memcpy(&(pmem->reply[pmem->reply_size]), content->valuestring, content_size);
@@ -169,7 +184,7 @@ static size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *u
                 }
             }
             cJSON_Delete(root);
-            start_idx = end_idx + 1;
+            glob_var.start_idx = glob_var.end_idx + 1;
         }
         free(json_str);
     }
@@ -317,6 +332,8 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         cJSON *think_end_flag = cJSON_GetObjectItemCaseSensitive(root, "think_end_flag");
         cJSON *direct_chat_flag = cJSON_GetObjectItemCaseSensitive(root, "direct_chat_flag");
         cJSON *msg_arr_size = cJSON_GetObjectItemCaseSensitive(root, "msg_arr_size");
+        cJSON *start_idx = cJSON_GetObjectItemCaseSensitive(root, "start_idx");
+        cJSON *end_idx = cJSON_GetObjectItemCaseSensitive(root, "end_idx");
         cJSON *msg_arr = cJSON_GetObjectItemCaseSensitive(root, "msg_arr");
         pmem->think_start_flag = think_start_flag->valueint;
         pmem->think_end_flag = think_end_flag->valueint;
@@ -326,9 +343,11 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         if (msg_arr && cJSON_IsArray(msg_arr)) {
             pmem->msg_arr = cJSON_Duplicate(msg_arr, 1);
         }
-        // pmem->size = 0;
+        pmem->size = 0;
         pmem->reply_size = 0;
         pmem->msg_arr_size = msg_arr_size->valueint;
+        glob_var.start_idx = start_idx->valueint;
+        glob_var.end_idx = end_idx->valueint;
         cJSON_Delete(root);
     } else {
         perror("open file error!");
@@ -349,9 +368,9 @@ enum prompt_res_enum save_mem(char* filepath, const struct Memory *pmem) {
     // cJSON_AddNumberToObject(root, "size", pmem->size);
     // cJSON_AddNumberToObject(root, "reply_size", pmem->reply_size);
     cJSON_AddNumberToObject(root, "msg_arr_size", pmem->msg_arr_size);
-    // cJSON_AddStringToObject(root, "data", pmem->data ? pmem->data : "");
-    // cJSON_AddStringToObject(root, "reply", pmem->reply ? pmem->reply : "");
-    cJSON_AddItemToObject(root, "msg_arr", pmem->msg_arr);
+    cJSON_AddNumberToObject(root, "start_idx", glob_var.start_idx);
+    cJSON_AddNumberToObject(root, "end_idx", glob_var.end_idx);
+    cJSON_AddItemToObject(root, "msg_arr", cJSON_Duplicate(pmem->msg_arr, 1));
 
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -508,8 +527,18 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
                         }
                     }
                 }
+            } else if(token1 && strcmp(token1, "debug")==0) {
+                printf("size:\n%ld\n", pmem->size);
+                printf("reply_size:\n%ld\n", pmem->reply_size);
+                printf("start_idx:\n%d\n", glob_var.start_idx);
+                printf("end_idx:\n%d\n", glob_var.end_idx);
+                if(pmem->data) printf("data:\n%s\n", pmem->data);
+                if(pmem->reply) printf("reply:\n%s\n", pmem->reply);
+                char* msg_arr_str = cJSON_Print(pmem->msg_arr);
+                printf("msg_arr:\n%s\n", msg_arr_str);
+                free(msg_arr_str);
             } else {
-                printf("usage: /print history\n");
+                printf("usage: /print [history|debug]\n");
             }
             free(cmd);
             free(buffer);
@@ -1142,6 +1171,8 @@ int main(int argc, char **argv)
     mem.reply_size = 0;
     mem.think_start_flag = 0;   // 1表示还未进入回答callback
     mem.think_end_flag = 0;
+    glob_var.start_idx = 0;
+    glob_var.end_idx = 0;
     mem.direct_chat_flag = strlen(final_msg)==0;
     if(help_flag) {
         show_help();
