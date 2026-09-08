@@ -18,7 +18,7 @@ void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
 struct Memory {
     char* data;         // 返回的数据块
     char* reply;        // 回答的字符串
-    char** msg_arr;    // 对话历史
+    cJSON* msg_arr;    // 对话历史
     int think_start_flag;   // 思考数据块开始标志
     int think_end_flag;     // 思考数据块结束标志
     int direct_chat_flag;   // 是否直接进入对话模式
@@ -312,9 +312,7 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         }
         free(pmem->data);
         free(pmem->reply);
-        for(int i=0; i<pmem->msg_arr_size; i++) {
-            free((pmem->msg_arr)[i]);
-        }
+        free(pmem->msg_arr);
         cJSON *think_start_flag = cJSON_GetObjectItemCaseSensitive(root, "think_start_flag");
         cJSON *think_end_flag = cJSON_GetObjectItemCaseSensitive(root, "think_end_flag");
         cJSON *direct_chat_flag = cJSON_GetObjectItemCaseSensitive(root, "direct_chat_flag");
@@ -323,20 +321,14 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         pmem->think_start_flag = think_start_flag->valueint;
         pmem->think_end_flag = think_end_flag->valueint;
         pmem->direct_chat_flag = direct_chat_flag->valueint;
-        pmem->msg_arr_size = msg_arr_size->valueint;
         pmem->data = strndup("", 0);
         pmem->reply = strndup("", 0);
-        char** msg_arr_temp = (char**)realloc(pmem->msg_arr, sizeof(char*)*(pmem->msg_arr_size));
-        if(msg_arr_temp) {
-            pmem->msg_arr = msg_arr_temp;
-            for(int i=0; i<pmem->msg_arr_size; i++) {
-                cJSON *chat_arr_item = cJSON_GetArrayItem(msg_arr, i);
-                (pmem->msg_arr)[i] = strndup(chat_arr_item->valuestring, strlen(chat_arr_item->valuestring));
-            }
-        } else {
-            perror("allocating chat array memory failed");
-            exit(1);
+        if (msg_arr && cJSON_IsArray(msg_arr)) {
+            pmem->msg_arr = cJSON_Duplicate(msg_arr, 1);
         }
+        // pmem->size = 0;
+        pmem->reply_size = 0;
+        pmem->msg_arr_size = msg_arr_size->valueint;
         cJSON_Delete(root);
     } else {
         perror("open file error!");
@@ -359,12 +351,8 @@ enum prompt_res_enum save_mem(char* filepath, const struct Memory *pmem) {
     cJSON_AddNumberToObject(root, "msg_arr_size", pmem->msg_arr_size);
     // cJSON_AddStringToObject(root, "data", pmem->data ? pmem->data : "");
     // cJSON_AddStringToObject(root, "reply", pmem->reply ? pmem->reply : "");
-    
-    cJSON *chat = cJSON_AddArrayToObject(root, "msg_arr");
-    for (size_t i = 0; i < pmem->msg_arr_size; i++) {
-        cJSON_AddItemToArray(chat, cJSON_CreateString(pmem->msg_arr[i]));
-    }
-    
+    cJSON_AddItemToObject(root, "msg_arr", pmem->msg_arr);
+
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);
     
@@ -508,8 +496,17 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
         } else if(strcmp(token, "/print") == 0) {
             char* token1 = strtok(NULL, " \t\n\r\f\v");
             if (token1 && strcmp(token1, "history")==0) {
-                for(int i=0; i<pmem->msg_arr_size; i++) {
-                    printf("%s\n", (pmem->msg_arr)[i]);
+                if(pmem->msg_arr && cJSON_IsArray(pmem->msg_arr)) {
+                    for (int i=0; i<cJSON_GetArraySize(pmem->msg_arr); i++) {
+                        cJSON *item = cJSON_GetArrayItem(pmem->msg_arr, i);
+                        if(item) {
+                            char* item_str = cJSON_Print(item);
+                            if(item_str) {
+                                printf("%s\n", item_str);
+                                free(item_str);
+                            }
+                        }
+                    }
                 }
             } else {
                 printf("usage: /print history\n");
@@ -568,6 +565,9 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
             cJSON_AddStringToObject(msg_nested_object, "role", "user");
             cJSON_AddStringToObject(msg_nested_object, "content", dup_msg);
             cJSON_AddItemToArray(msg_jarr, msg_nested_object);
+            cJSON* dup_msg_obj = cJSON_Duplicate(msg_nested_object, 1);
+            cJSON_AddItemToArray(pmem->msg_arr, dup_msg_obj);
+            pmem->msg_arr_size++;
             free(dup_msg);
         } else {
             perror("allocating memory error!");
@@ -583,30 +583,16 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
             cJSON_AddStringToObject(reply_nested_objects, "role", "assistant");
             cJSON_AddStringToObject(reply_nested_objects, "content", dup_reply);
             cJSON_AddItemToArray(msg_jarr, reply_nested_objects);
+            cJSON* dup_reply_obj = cJSON_Duplicate(reply_nested_objects, 1);
+            cJSON_AddItemToArray(pmem->msg_arr, dup_reply_obj);
+            pmem->msg_arr_size++;
             free(dup_reply);
         } else {
             perror("allocating memory error!");
             exit(1);
         }
 
-        char** msg_arr_temp = (char**)realloc(pmem->msg_arr, sizeof(char*)*(pmem->msg_arr_size+2));
-        if(msg_arr_temp) {
-            pmem->msg_arr = msg_arr_temp;
-            char* final_msg_temp = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
-            char* reply_temp = strndup(pmem->reply, MAX_CONTEXT_SIZE);
-            if(final_msg_temp && reply_temp) {
-                pmem->reply_size = 0;
-            } else {
-                perror("allocating memory error!");
-                exit(1);
-            }
-            pmem->msg_arr[pmem->msg_arr_size] = final_msg_temp;
-            pmem->msg_arr[pmem->msg_arr_size+1] = reply_temp;
-            pmem->msg_arr_size += 2;
-        } else {
-            perror("allocating message array memory failed");
-            exit(1);
-        }
+        pmem->reply_size = 0;
 
 chat_prompt:
         int prompt_res = chat_prompt(final_msg, pmem);
@@ -1140,11 +1126,16 @@ int main(int argc, char **argv)
     free(msg);
     
     // 与deepseek对话
+    cJSON* msg_arr = cJSON_CreateArray();
+    if(!msg_arr) {
+        perror("allocate message array error!");
+        exit(1);
+    }
     struct Memory mem;
     mem.data = (char*)malloc(1);  // 初始分配
     mem.data[0] = '\0';
     mem.size = 0;
-    mem.msg_arr = (char**)malloc(sizeof(char*));
+    mem.msg_arr = msg_arr;
     mem.msg_arr_size = 0;
     mem.reply = (char*)malloc(1);
     mem.reply[0] = '\0';
@@ -1165,9 +1156,6 @@ int main(int argc, char **argv)
     free(final_msg);
     free(mem.data);
     free(mem.reply);
-    for(int i=0; i<mem.msg_arr_size; i++) {
-        free(mem.msg_arr[i]);
-    }
-    free(mem.msg_arr);
+    cJSON_Delete(mem.msg_arr);
     return 0;
 }
