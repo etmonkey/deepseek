@@ -75,20 +75,73 @@ char* strip(char *str) {
  */
 size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total_size = size * nmemb;
-    struct Memory *mem = (struct Memory *)userdata;
+    struct Memory *pmem = (struct Memory *)userdata;
 
     // 重新分配内存
-    char *temp = realloc(mem->data, mem->size + total_size + 1);
+    char *temp = realloc(pmem->data, pmem->size + total_size + 1);
     if (temp == NULL) {
         printf("Not enough memory\n");
         return -1;
     }
 
-    mem->data = temp;
-    memcpy(&(mem->data[mem->size]), ptr, total_size);
-    mem->size += total_size;
-    mem->data[mem->size] = '\0';  // 确保是 C 字符串
+    pmem->data = temp;
+    memcpy(&(pmem->data[pmem->size]), ptr, total_size);
+    pmem->size += total_size;
+    pmem->data[pmem->size] = '\0';  // 确保是 C 字符串
 
+    static int count = 0;
+    printf("count: %d\npmem->data: %s\n", count++, pmem->data);
+    cJSON *root = cJSON_Parse(pmem->data);
+    if(root) {
+        if (cJSON_HasObjectItem(root, "error")) {
+            cJSON *error = cJSON_GetObjectItem(root, "error");
+            char* error_code = cJSON_GetObjectItem(error, "code")->valuestring;
+            char* error_msg = cJSON_GetObjectItem(error, "message")->valuestring;
+            printf("error requesting data, error code: %s\n", error_code);
+            printf("error message: %s\n", error_msg);
+            cJSON_Delete(root);
+            return -1;
+        }
+        if (cJSON_HasObjectItem(root, "choices")) {
+            cJSON *choices = cJSON_GetObjectItem(root, "choices");
+            int choices_count = cJSON_GetArraySize(choices);
+            if(choices && cJSON_IsArray(choices)) {
+                for(int i=0; i<choices_count; i++){
+                    cJSON *a_choice = cJSON_GetArrayItem(choices, i);
+                    if(a_choice) {
+                        cJSON *message = cJSON_GetObjectItem(a_choice, "message");
+                        if(message) {
+                            cJSON *reasoning_content = cJSON_GetObjectItem(message, "reasoning_content");
+                            cJSON *content = cJSON_GetObjectItem(message, "content");
+                            if(reasoning_content && cJSON_IsString(reasoning_content)) {
+                                printf("<think>\n");
+                                printf("%s", reasoning_content->valuestring);
+                                printf("\n<\\think>\n");
+                                fflush(stdout); // 立即输出思考内容
+                            }
+                            if(content && cJSON_IsString(content)) {
+                                printf("%s\n", content->valuestring);
+                                fflush(stdout); // 立即输出回答内容
+                                int content_size = strlen(content->valuestring);
+                                char *reply_temp = realloc(pmem->reply, pmem->reply_size + content_size + 1);
+                                if(reply_temp == NULL) {
+                                    printf("Not enough memory\n");
+                                    return -1;
+                                }
+                                pmem->reply = reply_temp;
+                                memcpy(&(pmem->reply[pmem->reply_size]), content->valuestring, content_size);
+                                pmem->reply_size += content_size;
+                                pmem->reply[pmem->reply_size] = '\0';
+                            }
+                        }
+                        
+                    }
+                }
+            }
+        }
+        cJSON_Delete(root);
+        glob_var.start_idx = glob_var.end_idx + 1;
+    }
     return total_size;  // 必须返回接收的字节数，否则会终止传输
 }
 
@@ -116,7 +169,8 @@ size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata
     char* all_line = pmem->data;
     char* line = NULL;
     char* end = NULL;
-    // printf("line: %s\n", line);
+    static int count = 0;
+    printf("count: %d\npmem->data: %s\n", count++, pmem->data);
     while((line = strstr(all_line + glob_var.start_idx, "data: "))) {
         line += 6; // 跳过 "data: "
         end = strchr(line, '\n');
@@ -907,9 +961,11 @@ void parse_config(const cJSON* config, cJSON* data_root, char** base_url, char**
     cJSON_AddNumberToObject(data_root, "max_tokens", max_tokens);
     cJSON_AddNumberToObject(data_root, "temperature", temperature);
     cJSON_AddBoolToObject(data_root, "stream", stream);
-    cJSON* stream_options = cJSON_CreateObject();
-    cJSON_AddBoolToObject(stream_options, "include_usage", include_usage);
-    cJSON_AddItemToObject(data_root, "stream_options", stream_options);
+    if(stream) {
+        cJSON* stream_options = cJSON_CreateObject();
+        cJSON_AddBoolToObject(stream_options, "include_usage", include_usage);
+        cJSON_AddItemToObject(data_root, "stream_options", stream_options);
+    }
 
     free(sel_model);
     free(thinking_type);
@@ -971,6 +1027,7 @@ void show_help() {
     printf("args: \n");
     printf("\t-h: show help\n");
     printf("\t-c: chat mode\n");
+    printf("\t-s: stream mode t(default)/f\n");
     printf("\t-t: use tool calls n(none, default)/a(auto)/r(required)\n");
     printf("\t-p: add prompt\n");
     printf("\t-q: add to question\n");
@@ -991,13 +1048,37 @@ int main(int argc, char **argv)
     int help_flag = 0;
     cJSON* config = read_config();
     char* question = NULL;
-    while ((opt = getopt(argc, argv, "hct:p:q:v:m:r:e:o:ku")) != -1) {
+    while ((opt = getopt(argc, argv, "hcs:t:p:q:v:m:r:e:o:ku")) != -1) {
         switch(opt) {
             case 'h':
                 help_flag = 1;
                 break;
             case 'c':
                 chat_flag = 1;
+                break;
+            case 's':
+                if(strlen(optarg)>1) {
+                    perror("stream argument error!");
+                    exit(1);
+                }
+                int stream_opt = 1;
+                switch (optarg[0]) {
+                    case 't':
+                        stream_opt = 1;
+                        break;
+                    case 'f':
+                        stream_opt = 0;
+                        break;
+                    default:
+                        perror("stream argument error!");
+                        exit(1);
+                }
+                cJSON* stream_obj = cJSON_GetObjectItem(config, "stream");
+                if (stream_obj) {
+                    cJSON_SetBoolValue(stream_obj, stream_opt); // 修改 prompt 的值
+                } else {
+                    cJSON_AddBoolToObject(config, "stream", stream_opt); // 如果键不存在，添加键值对
+                }
                 break;
             case 't':
                 if(strlen(optarg)>1) {
