@@ -5,8 +5,10 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include <cjson/cJSON.h>
+#include "cjson/cJSON.h"
 #include "tool_calls.h"
+
+#define DEBUG 0
 
 #define MAX_CONTEXT_SIZE 1024*1024
 #define MAX_MSG_FACTOR 0.7
@@ -25,6 +27,7 @@ struct Memory {
     size_t size;            // 返回的数据块长度
     size_t reply_size;      // 回答的字符串长度
     size_t msg_arr_size;    // 对话长度
+    struct ToolCallManager *tc_mgr; //tool calls管理器
 };
 
 struct GlobalVar {
@@ -89,8 +92,11 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     pmem->size += total_size;
     pmem->data[pmem->size] = '\0';  // 确保是 C 字符串
 
+#if DEBUG==1
     static int count = 0;
-    printf("count: %d\npmem->data: %s\n", count++, pmem->data);
+    printf("count: %d\npmem->data:\n%s\n", count++, pmem->data);
+#endif
+
     cJSON *root = cJSON_Parse(pmem->data);
     if(root) {
         if (cJSON_HasObjectItem(root, "error")) {
@@ -169,8 +175,12 @@ size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata
     char* all_line = pmem->data;
     char* line = NULL;
     char* end = NULL;
+
+#if DEBUG==1
     static int count = 0;
-    printf("count: %d\npmem->data: %s\n", count++, pmem->data);
+    printf("count: %d\npmem->data:\n%s\n", count++, pmem->data);
+#endif
+
     while((line = strstr(all_line + glob_var.start_idx, "data: "))) {
         line += 6; // 跳过 "data: "
         end = strchr(line, '\n');
@@ -211,6 +221,7 @@ size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata
                             if(delta) {
                                 cJSON *reasoning_content = cJSON_GetObjectItem(delta, "reasoning_content");
                                 cJSON *content = cJSON_GetObjectItem(delta, "content");
+                                cJSON *tool_calls = cJSON_GetObjectItem(delta, "tool_calls");
                                 if(reasoning_content && cJSON_IsString(reasoning_content)) {
                                     if(pmem->think_start_flag) {printf("<think>\n"); pmem->think_start_flag=0;}
                                     printf("%s", reasoning_content->valuestring);
@@ -230,6 +241,9 @@ size_t curl_write_stream_cb(char *ptr, size_t size, size_t nmemb, void *userdata
                                     memcpy(&(pmem->reply[pmem->reply_size]), content->valuestring, content_size);
                                     pmem->reply_size += content_size;
                                     pmem->reply[pmem->reply_size] = '\0';
+                                }
+                                if (tool_calls && cJSON_IsArray(tool_calls)) {
+                                    process_tool_calls(pmem->tc_mgr, tool_calls);
                                 }
                             }
                             
@@ -302,7 +316,10 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
     sprintf(str_auth, "Authorization: Bearer %s", api_key);
 
     char *post_fields = cJSON_Print(data_root);
-    // printf("post_fields:%s\n", post_fields);
+
+#if DEBUG==1
+    printf("post_fields:\n%s\n", post_fields);
+#endif
     
     char* thinking_type = cJSON_GetObjectItem(cJSON_GetObjectItem(data_root, "thinking"), "type")->valuestring;
     if(strcmp(thinking_type, "enabled")==0 || strcmp(model_choice, "r1")==0) {
@@ -590,6 +607,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
                 if(pmem->reply) printf("reply:\n%s\n", pmem->reply);
                 char* msg_arr_str = cJSON_Print(pmem->msg_arr);
                 printf("msg_arr:\n%s\n", msg_arr_str);
+                print_tool_call_mgr(pmem->tc_mgr);
                 free(msg_arr_str);
             } else {
                 printf("usage: /print [history|debug]\n");
@@ -633,6 +651,9 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
         cJSON_AddStringToObject(prompt_nested_object, "role", "system");
         cJSON_AddStringToObject(prompt_nested_object, "content", *str_prompt);
         cJSON_AddItemToArray(msg_jarr, prompt_nested_object);
+        cJSON* dup_prompt_obj = cJSON_Duplicate(prompt_nested_object, 1);
+        cJSON_AddItemToArray(pmem->msg_arr, dup_prompt_obj);
+        pmem->msg_arr_size++;
     }
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
 
@@ -723,6 +744,15 @@ int ask_one_shot(cJSON* config, char** final_msg, struct Memory* pmem) {
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
 
     ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
+
+    // print_tool_call_mgr(pmem->tc_mgr);
+    if(pmem->tc_mgr->call_count > 0) {
+        execute_all_tools(pmem->tc_mgr);
+        add_tool_call_to_message(pmem->tc_mgr, data_root);
+        ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
+
+        tool_call_manager_free(pmem->tc_mgr);
+    }
 
     cJSON_Delete(data_root);
     free(*base_url);
@@ -1252,9 +1282,11 @@ int main(int argc, char **argv)
     mem.reply_size = 0;
     mem.think_start_flag = 0;   // 1表示还未进入回答callback
     mem.think_end_flag = 0;
+    mem.direct_chat_flag = strlen(final_msg)==0;
+    mem.tc_mgr = (struct ToolCallManager*)malloc(sizeof(struct ToolCallManager));
+    tool_call_manager_init(mem.tc_mgr);
     glob_var.start_idx = 0;
     glob_var.end_idx = 0;
-    mem.direct_chat_flag = strlen(final_msg)==0;
     if(help_flag) {
         show_help();
     } else {
