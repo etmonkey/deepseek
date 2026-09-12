@@ -35,6 +35,6 @@ void tool_call_manager_init(struct ToolCallManager*);
 void tool_call_manager_free(struct ToolCallManager*);
 void process_tool_calls(struct ToolCallManager *, cJSON *);
 void execute_all_tools(struct ToolCallManager *);
-void add_tool_call_to_message(struct ToolCallManager *, cJSON*);
+void add_tool_call_to_message(struct ToolCallManager *, cJSON*, cJSON*, size_t*);
 
 #endif

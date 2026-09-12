@@ -209,7 +209,7 @@ void execute_all_tools(struct ToolCallManager *mgr) {
 /**
  * 构造role: tool的消息
  */
-void add_tool_call_to_message(struct ToolCallManager *mgr, cJSON* data_root) {
+void add_tool_call_to_message(struct ToolCallManager *mgr, cJSON* data_root, cJSON *msg_arr, size_t* msg_arr_size) {
     cJSON* messages = cJSON_GetObjectItem(data_root, "messages");
     if (messages == NULL || !cJSON_IsArray(messages)) return;
 
@@ -233,6 +233,9 @@ void add_tool_call_to_message(struct ToolCallManager *mgr, cJSON* data_root) {
     }
     cJSON_AddItemToObject(assistant, "tool_calls", tool_calls);
     cJSON_AddItemToArray(messages, assistant);
+    cJSON* dup_assistant = cJSON_Duplicate(assistant, 1);
+    cJSON_AddItemToArray(msg_arr, dup_assistant);
+    (*msg_arr_size)++;
 
     for(int i=0; i<mgr->call_count; i++) {
         struct ToolCallContext *ctx = &((mgr->calls)[i]);
@@ -244,5 +247,8 @@ void add_tool_call_to_message(struct ToolCallManager *mgr, cJSON* data_root) {
         cJSON_AddStringToObject(tool, "tool_call_id", tool_call_id);
         cJSON_AddStringToObject(tool, "content", content);
         cJSON_AddItemToArray(messages, tool);
+        cJSON* dup_tool = cJSON_Duplicate(tool, 1);
+        cJSON_AddItemToArray(msg_arr, dup_tool);
+        (*msg_arr_size)++;
     }
 }

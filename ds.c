@@ -10,10 +10,12 @@
 
 #define DEBUG 0
 
+#define MAX_TOOLCALL_ITER 5
 #define MAX_CONTEXT_SIZE 1024*1024
 #define MAX_MSG_FACTOR 0.7
 
-enum prompt_res_enum {SUCCESS, BREAK, GOTOPROMPT, SKIP};
+enum prompt_res_enum {PROMPT_SUCCESS, PROMPT_BREAK, PROMPT_GOTOPROMPT, PROMPT_SKIP};
+enum ask_online_res_enum {ASK_CONTINUE, ASK_BREAK};
 
 void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
 
@@ -304,12 +306,37 @@ int ask_local(char* msg, struct Memory* pmem) {
 /**
  * 调用deepseek引擎
  */
-int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_key, char* model_choice) {
+enum ask_online_res_enum ask_online(struct Memory* pmem, cJSON* data_root, char** final_msg, char* base_url, char* api_key, char* model_choice) {
     CURL* curl;
     curl_global_init(CURL_GLOBAL_DEFAULT);
     curl = curl_easy_init();
     if(curl==NULL) {
-        return 1;
+        exit(1);
+    }
+
+    cJSON* msg_jarr = cJSON_GetObjectItem(data_root, "messages");
+    if(msg_jarr==NULL || !cJSON_IsArray(msg_jarr)) {
+        perror("fetch messages array error!");
+        exit(1);
+    }
+
+    if(pmem->tc_mgr->call_count > 0) {
+        tool_call_manager_free(pmem->tc_mgr);
+    } else {
+        char* dup_msg = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
+        if(dup_msg) {
+            cJSON* msg_nested_object = cJSON_CreateObject();
+            cJSON_AddStringToObject(msg_nested_object, "role", "user");
+            cJSON_AddStringToObject(msg_nested_object, "content", dup_msg);
+            cJSON_AddItemToArray(msg_jarr, msg_nested_object);
+            cJSON* dup_msg_obj = cJSON_Duplicate(msg_nested_object, 1);
+            cJSON_AddItemToArray(pmem->msg_arr, dup_msg_obj);
+            pmem->msg_arr_size++;
+            free(dup_msg);
+        } else {
+            perror("allocating memory error!");
+            exit(1);
+        }
     }
 
     char* str_auth = (char*) malloc(sizeof(char)*(strlen(api_key) + 23));
@@ -351,10 +378,44 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         if(http_code < 200 || http_code >= 300) {
             fprintf(stderr, "fetch result error: %s\n", pmem->data);
+
+            free(post_fields);
+            free(str_auth);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            curl_global_cleanup();
+            exit(1);
         }
     } else {
         fprintf(stderr, "cURL request failed: %s\n", curl_easy_strerror(res));
-        return 1;
+
+        free(post_fields);
+        free(str_auth);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        curl_global_cleanup();
+        exit(1);
+    }
+
+    if(pmem->tc_mgr->call_count > 0) {
+        execute_all_tools(pmem->tc_mgr);
+        add_tool_call_to_message(pmem->tc_mgr, data_root, pmem->msg_arr, &(pmem->msg_arr_size));
+    } else {
+        char* dup_reply = strndup(pmem->reply, MAX_CONTEXT_SIZE);
+        if(dup_reply) {
+            cJSON* reply_nested_objects = cJSON_CreateObject();
+            cJSON_AddStringToObject(reply_nested_objects, "role", "assistant");
+            cJSON_AddStringToObject(reply_nested_objects, "content", dup_reply);
+            cJSON_AddItemToArray(msg_jarr, reply_nested_objects);
+            cJSON* dup_reply_obj = cJSON_Duplicate(reply_nested_objects, 1);
+            cJSON_AddItemToArray(pmem->msg_arr, dup_reply_obj);
+            pmem->msg_arr_size++;
+            free(dup_reply);
+            return ASK_BREAK;
+        } else {
+            perror("allocating memory error!");
+            exit(1);
+        }
     }
 
     free(post_fields);
@@ -362,13 +423,13 @@ int ask_online(struct Memory* pmem, cJSON* data_root, char* base_url, char* api_
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     curl_global_cleanup();
-    return 0;
+    return ASK_CONTINUE;
 }
 
 /**
  * 从文件加载对话
  */
-enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
+enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem, cJSON* data_root) {
     FILE *fp = fopen(filepath, "r");
     if (fp) {
         // 获取文件大小
@@ -379,14 +440,14 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         if (content == NULL) {
             perror("memory allocation failed");
             fclose(fp);
-            return GOTOPROMPT;
+            return PROMPT_GOTOPROMPT;
         }
         size_t bytes_read = fread(content, 1, file_size, fp);
         if (bytes_read != file_size) {
             perror("read file failed!");
             free(content);
             fclose(fp);
-            return GOTOPROMPT;
+            return PROMPT_GOTOPROMPT;
         }
         content[file_size] = '\0';
         fclose(fp);
@@ -413,6 +474,7 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         pmem->reply = strndup("", 0);
         if (msg_arr && cJSON_IsArray(msg_arr)) {
             pmem->msg_arr = cJSON_Duplicate(msg_arr, 1);
+            cJSON_ReplaceItemInObject(data_root, "messages", cJSON_Duplicate(msg_arr, 1));
         }
         pmem->size = 0;
         pmem->reply_size = 0;
@@ -422,9 +484,9 @@ enum prompt_res_enum load_mem(char* filepath, struct Memory *pmem) {
         cJSON_Delete(root);
     } else {
         perror("open file error!");
-        return GOTOPROMPT;
+        return PROMPT_GOTOPROMPT;
     }
-    return SKIP;
+    return PROMPT_SKIP;
 }
 
 /**
@@ -450,12 +512,12 @@ enum prompt_res_enum save_mem(char* filepath, const struct Memory *pmem) {
     if (!fp) {
         perror("open file path error!");
         free(json_str);
-        return GOTOPROMPT;
+        return PROMPT_GOTOPROMPT;
     }
     fprintf(fp, "%s", json_str);
     fclose(fp);
     free(json_str);
-    return SKIP;
+    return PROMPT_SKIP;
 }
 
 /**
@@ -494,7 +556,7 @@ int ensure_path(const char *filepath) {
 /**
  * 与用户交互
  */
-enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
+enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem, cJSON* data_root) {
     printf(">");
     if (!isatty(fileno(stdin)))
     {
@@ -527,7 +589,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
         if (strcmp(token, "/bye") == 0) {
             free(cmd);
             free(buffer);
-            return BREAK;
+            return PROMPT_BREAK;
         } else if (strcmp(token, "/save") == 0) {
             char* token1 = strtok(NULL, " \t\n\r\f\v");
             if (token1) {
@@ -542,10 +604,10 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
                     perror("generate save file failed!");
                     free(cmd);
                     free(buffer);
-                    return GOTOPROMPT;
+                    return PROMPT_GOTOPROMPT;
                 }
                 enum prompt_res_enum res = save_mem(filepath, pmem);
-                if(res != SKIP) {
+                if(res != PROMPT_SKIP) {
                     free(cmd);
                     free(buffer);
                     free(filepath);
@@ -558,7 +620,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
             }
             free(cmd);
             free(buffer);
-            return GOTOPROMPT;
+            return PROMPT_GOTOPROMPT;
         } else if(strcmp(token, "/load") == 0) {
             char* token1 = strtok(NULL, " \t\n\r\f\v");
             if (token1) {
@@ -569,9 +631,9 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
                 }
                 char* filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+strlen(token1)+16));
                 snprintf(filepath, strlen(home_dir)+strlen(token1)+16, "%s/.ds/save/%s%s", home_dir, token1, ".save");
-                enum prompt_res_enum res = load_mem(filepath, pmem);
+                enum prompt_res_enum res = load_mem(filepath, pmem, data_root);
                 free(filepath);
-                if(res != SKIP) {
+                if(res != PROMPT_SKIP) {
                     free(cmd);
                     free(buffer);
                     return res;
@@ -582,7 +644,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
             }
             free(cmd);
             free(buffer);
-            return GOTOPROMPT;
+            return PROMPT_GOTOPROMPT;
         } else if(strcmp(token, "/print") == 0) {
             char* token1 = strtok(NULL, " \t\n\r\f\v");
             if (token1 && strcmp(token1, "history")==0) {
@@ -614,7 +676,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
             }
             free(cmd);
             free(buffer);
-            return GOTOPROMPT;
+            return PROMPT_GOTOPROMPT;
         }
     }
     if(*final_msg) {
@@ -630,7 +692,7 @@ enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem) {
     free(buffer);
     free(cmd);
 
-    return SUCCESS;
+    return PROMPT_SUCCESS;
 }
 
 /**
@@ -663,46 +725,20 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
             pmem->direct_chat_flag = 0;
             goto chat_prompt;
         }
-        char* dup_msg = strndup(*final_msg, MAX_CONTEXT_SIZE*MAX_MSG_FACTOR);
-        if(dup_msg) {
-            cJSON* msg_nested_object = cJSON_CreateObject();
-            cJSON_AddStringToObject(msg_nested_object, "role", "user");
-            cJSON_AddStringToObject(msg_nested_object, "content", dup_msg);
-            cJSON_AddItemToArray(msg_jarr, msg_nested_object);
-            cJSON* dup_msg_obj = cJSON_Duplicate(msg_nested_object, 1);
-            cJSON_AddItemToArray(pmem->msg_arr, dup_msg_obj);
-            pmem->msg_arr_size++;
-            free(dup_msg);
-        } else {
-            perror("allocating memory error!");
-            exit(1);
-        }
-
-        // 调用deepseek服务
-        ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
-
-        char* dup_reply = strndup(pmem->reply, MAX_CONTEXT_SIZE);
-        if(dup_reply) {
-            cJSON* reply_nested_objects = cJSON_CreateObject();
-            cJSON_AddStringToObject(reply_nested_objects, "role", "assistant");
-            cJSON_AddStringToObject(reply_nested_objects, "content", dup_reply);
-            cJSON_AddItemToArray(msg_jarr, reply_nested_objects);
-            cJSON* dup_reply_obj = cJSON_Duplicate(reply_nested_objects, 1);
-            cJSON_AddItemToArray(pmem->msg_arr, dup_reply_obj);
-            pmem->msg_arr_size++;
-            free(dup_reply);
-        } else {
-            perror("allocating memory error!");
-            exit(1);
+        
+        for(int i=0; i<MAX_TOOLCALL_ITER; i++) {
+            // 调用deepseek服务
+            enum ask_online_res_enum res = ask_online(pmem, data_root, final_msg, *base_url, *api_key, *model_choice);
+            if(res==ASK_BREAK) break;
         }
 
         pmem->reply_size = 0;
 
 chat_prompt:
-        int prompt_res = chat_prompt(final_msg, pmem);
-        if(prompt_res == BREAK) break;
-        else if(prompt_res == GOTOPROMPT) goto chat_prompt;
-        else if(prompt_res == SUCCESS) continue;
+        int prompt_res = chat_prompt(final_msg, pmem, data_root);
+        if(prompt_res == PROMPT_BREAK) break;
+        else if(prompt_res == PROMPT_GOTOPROMPT) goto chat_prompt;
+        else if(prompt_res == PROMPT_SUCCESS) continue;
     }
 
     cJSON_Delete(data_root);
@@ -743,15 +779,9 @@ int ask_one_shot(cJSON* config, char** final_msg, struct Memory* pmem) {
 
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
 
-    ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
-
-    // print_tool_call_mgr(pmem->tc_mgr);
-    if(pmem->tc_mgr->call_count > 0) {
-        execute_all_tools(pmem->tc_mgr);
-        add_tool_call_to_message(pmem->tc_mgr, data_root);
-        ask_online(pmem, data_root, *base_url, *api_key, *model_choice);
-
-        tool_call_manager_free(pmem->tc_mgr);
+    for(int i=0; i<MAX_TOOLCALL_ITER; i++) {
+        enum ask_online_res_enum res = ask_online(pmem, data_root, final_msg, *base_url, *api_key, *model_choice);
+        if(res==ASK_BREAK) break;
     }
 
     cJSON_Delete(data_root);
