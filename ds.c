@@ -1135,7 +1135,7 @@ int main(int argc, char **argv)
                 }
                 cJSON* stream_obj = cJSON_GetObjectItem(config, "stream");
                 if (stream_obj) {
-                    cJSON_SetBoolValue(stream_obj, stream_opt); // 修改 prompt 的值
+                    cJSON_SetIntValue(stream_obj, stream_opt); // 修改 prompt 的值
                 } else {
                     cJSON_AddBoolToObject(config, "stream", stream_opt); // 如果键不存在，添加键值对
                 }
