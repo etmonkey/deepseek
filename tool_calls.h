@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <dirent.h>
+#include "global_vars.h"
 
 #define MAX_TOOL_CALL_ITER 5
 
@@ -35,6 +36,6 @@ void tool_call_manager_init(struct ToolCallManager*);
 void tool_call_manager_free(struct ToolCallManager*);
 void process_tool_calls(struct ToolCallManager *, cJSON *);
 void execute_all_tools(struct ToolCallManager *);
-void add_tool_call_to_message(struct ToolCallManager *, cJSON*, cJSON*, size_t*);
+void add_tool_call_to_message(struct Memory*, cJSON*);
 
 #endif

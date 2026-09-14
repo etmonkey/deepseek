@@ -10,6 +10,7 @@
 #include "config_json.h"
 #include "tool_calls_json.h"
 #include "tool_calls.h"
+#include "global_vars.h"
 
 #define DEBUG 0
 
@@ -21,19 +22,6 @@ enum prompt_res_enum {PROMPT_SUCCESS, PROMPT_BREAK, PROMPT_GOTOPROMPT, PROMPT_SK
 enum ask_online_res_enum {ASK_CONTINUE, ASK_BREAK};
 
 void parse_config(const cJSON*, cJSON*, char**, char**, char**, char**);
-
-struct Memory {
-    char* data;         // 返回的数据块
-    char* reply;        // 回答的字符串
-    cJSON* msg_arr;    // 对话历史
-    int think_start_flag;   // 思考数据块开始标志
-    int think_end_flag;     // 思考数据块结束标志
-    int direct_chat_flag;   // 是否直接进入对话模式
-    size_t size;            // 返回的数据块长度
-    size_t reply_size;      // 回答的字符串长度
-    size_t msg_arr_size;    // 对话长度
-    struct ToolCallManager *tc_mgr; //tool calls管理器
-};
 
 struct GlobalVar {
     int start_idx;  // 解析返回的数据块开始位置
@@ -86,16 +74,15 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     struct Memory *pmem = (struct Memory *)userdata;
 
     // 重新分配内存
-    char *temp = realloc(pmem->data, pmem->size + total_size + 1);
+    char *temp = realloc(pmem->data, total_size + 1);
     if (temp == NULL) {
         printf("Not enough memory\n");
         return -1;
     }
 
     pmem->data = temp;
-    memcpy(&(pmem->data[pmem->size]), ptr, total_size);
-    pmem->size += total_size;
-    pmem->data[pmem->size] = '\0';  // 确保是 C 字符串
+    pmem->data = strdup(ptr);
+    pmem->size = total_size+1;
 
 #if DEBUG==1
     static int count = 0;
@@ -124,6 +111,7 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
                         if(message) {
                             cJSON *reasoning_content = cJSON_GetObjectItem(message, "reasoning_content");
                             cJSON *content = cJSON_GetObjectItem(message, "content");
+                            cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
                             if(reasoning_content && cJSON_IsString(reasoning_content)) {
                                 printf("<think>\n");
                                 printf("%s", reasoning_content->valuestring);
@@ -134,15 +122,17 @@ size_t curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
                                 printf("%s\n", content->valuestring);
                                 fflush(stdout); // 立即输出回答内容
                                 int content_size = strlen(content->valuestring);
-                                char *reply_temp = realloc(pmem->reply, pmem->reply_size + content_size + 1);
+                                char *reply_temp = realloc(pmem->reply, content_size + 1);
                                 if(reply_temp == NULL) {
                                     printf("Not enough memory\n");
                                     return -1;
                                 }
                                 pmem->reply = reply_temp;
-                                memcpy(&(pmem->reply[pmem->reply_size]), content->valuestring, content_size);
-                                pmem->reply_size += content_size;
-                                pmem->reply[pmem->reply_size] = '\0';
+                                pmem->reply = strdup(content->valuestring);
+                                pmem->reply_size = content_size;
+                            }
+                            if (tool_calls && cJSON_IsArray(tool_calls)) {
+                                process_tool_calls(pmem->tc_mgr, tool_calls);
                             }
                         }
                         
@@ -402,7 +392,7 @@ enum ask_online_res_enum ask_online(struct Memory* pmem, cJSON* data_root, char*
 
     if(pmem->tc_mgr->call_count > 0) {
         execute_all_tools(pmem->tc_mgr);
-        add_tool_call_to_message(pmem->tc_mgr, data_root, pmem->msg_arr, &(pmem->msg_arr_size));
+        add_tool_call_to_message(pmem, data_root);
     } else {
         char* dup_reply = strndup(pmem->reply, MAX_CONTEXT_SIZE);
         if(dup_reply) {
@@ -775,11 +765,6 @@ int ask_one_shot(cJSON* config, char** final_msg, struct Memory* pmem) {
         cJSON_AddStringToObject(nested_object, "content", *str_prompt);
         cJSON_AddItemToArray(msg_jarr, nested_object);
     }
-    nested_object = cJSON_CreateObject();
-    cJSON_AddStringToObject(nested_object, "role", "user");
-    cJSON_AddStringToObject(nested_object, "content", *final_msg);
-    cJSON_AddItemToArray(msg_jarr, nested_object);
-
     cJSON_AddItemToObject(data_root, "messages", msg_jarr);
 
     for(int i=0; i<MAX_TOOLCALL_ITER; i++) {
@@ -1236,7 +1221,7 @@ int main(int argc, char **argv)
                 }
                 cJSON* stream_obj = cJSON_GetObjectItem(config, "stream");
                 if (stream_obj) {
-                    cJSON_SetIntValue(stream_obj, stream_opt); // 修改 prompt 的值
+                    cJSON_SetBoolValue(stream_obj, stream_opt); // 修改 prompt 的值
                 } else {
                     cJSON_AddBoolToObject(config, "stream", stream_opt); // 如果键不存在，添加键值对
                 }
