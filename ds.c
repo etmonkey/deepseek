@@ -3,9 +3,12 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
 #include "cjson/cJSON.h"
+#include "config_json.h"
+#include "tool_calls_json.h"
 #include "tool_calls.h"
 
 #define DEBUG 0
@@ -1080,6 +1083,103 @@ cJSON* read_config() {
 }
 
 /**
+ * 确保~/.ds/文件夹下存在配置文件
+ */
+void ensure_config_files() {
+    const char *home_dir = getenv("HOME");
+    if (home_dir == NULL) {
+        perror("Error: HOME environment variable not set.\n");
+        exit(1);
+    }
+    // save config file
+    char* config_filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+17));
+    snprintf(config_filepath, strlen(home_dir)+17, "%s/.ds/config.json", home_dir);
+    FILE *config_file = fopen(config_filepath, "wx");
+    int config_file_existed_flag = 0;
+    if (config_file == NULL) {
+        if (errno == EEXIST) {
+            config_file_existed_flag = 1;  // 文件已存在
+        } else {
+            perror("create config file error!");
+            exit(1);             // 其他错误，如没权限
+        }
+    }
+
+    if(config_file_existed_flag == 0) {
+        cJSON* config = cJSON_Parse(CONFIG_JSON);
+        cJSON* provider_choice = cJSON_GetObjectItem(config, "provider_choice");
+        if(!provider_choice) {
+            perror("internal error!");
+            exit(1);
+        }
+        char* provider_choice_str = provider_choice->valuestring;
+        if(strcmp(provider_choice_str, "local")!=0) {
+            cJSON* provider = cJSON_GetObjectItem(config, "provider");
+            if(!provider) {
+                perror("internal error!");
+                exit(1);
+            }
+            cJSON* sel_provider = cJSON_GetObjectItem(provider, provider_choice_str);
+            if(!sel_provider) {
+                perror("internal error!");
+                exit(1);
+            }
+            cJSON* sel_api_key = cJSON_GetObjectItem(sel_provider, "api_key");
+            if(!sel_api_key) {
+                perror("internal error!");
+                exit(1);
+            }
+            printf("please enter api key for %s provider > ", provider_choice_str);
+            char api_key[1024];
+            if (fgets(api_key, sizeof(api_key), stdin) == NULL) {
+                perror("read api key failed!");
+                return exit(1);
+            }
+            api_key[strcspn(api_key, "\n")] = '\0';
+            cJSON_SetValuestring(sel_api_key, strdup(api_key));
+        }
+
+        char* json_str = cJSON_Print(config);
+        if (fputs(json_str, config_file) == EOF) {
+            perror("write config file error!");
+            exit(1);
+        }
+        if (fclose(config_file) != 0) {
+            perror("close config file error!");
+            exit(1);
+        }
+
+        free(json_str);
+        cJSON_Delete(config);
+    }
+
+    // save tool calls config file
+    char* tools_filepath = (char*)malloc(sizeof(char)*(strlen(home_dir)+21));
+    snprintf(tools_filepath, strlen(home_dir)+21, "%s/.ds/tool_calls.json", home_dir);
+    FILE *tools_file = fopen(tools_filepath, "wx");
+    int tools_file_existed_flag = 0;
+    if (tools_file == NULL) {
+        if (errno == EEXIST) {
+            tools_file_existed_flag = 1;  // 文件已存在
+        } else {
+            perror("create config file error!");
+            exit(1);             // 其他错误，如没权限
+        }
+    }
+
+    if(tools_file_existed_flag == 0) {
+        if (fputs(TOOL_CALLS_JSON, tools_file) == EOF) {
+            perror("write tool calls config file error!");
+            exit(1);
+        }
+        if (fclose(tools_file) != 0) {
+            perror("close tool calls config file error!");
+            exit(1);
+        }
+    }
+}
+
+/**
  * 展示帮助信息
  */
 void show_help() {
@@ -1106,6 +1206,7 @@ int main(int argc, char **argv)
     int opt;
     int chat_flag = 0;
     int help_flag = 0;
+    ensure_config_files();
     cJSON* config = read_config();
     char* question = NULL;
     while ((opt = getopt(argc, argv, "hcs:t:p:q:v:m:r:e:o:ku")) != -1) {
