@@ -49,6 +49,107 @@ char* list_dir(const char* dir_path) {
     return res;
 }
 
+/**
+ * 在dir_path目录下创建文件filename
+ */
+char* make_file(const char* dir_path, const char* filename) {
+    char* res = (char*)malloc(sizeof(char)*10);
+
+    if (!dir_path || !*dir_path || !filename || !*filename) {
+        res = strdup("failed");
+        return res;
+    }
+    char filepath[PATH_MAX];
+
+    if(dir_path[strlen(dir_path)-1]=='/') {
+        if((strlen(dir_path)+strlen(filename))>PATH_MAX) {
+            res = strdup("failed");
+            return res;
+        }
+        snprintf(filepath, PATH_MAX, "%s%s", dir_path, filename);
+    } else {
+        if((strlen(dir_path)+strlen(filename)+1)>PATH_MAX) {
+            res = strdup("failed");
+            return res;
+        }
+        snprintf(filepath, PATH_MAX, "%s/%s", dir_path, filename);
+    }
+
+    // 1. 提取目录路径
+    char path[PATH_MAX];
+    strcpy(path, filepath);
+    char *p = strrchr(path, '/');
+    if (!p) {// 没有目录
+        res = strdup("failed");
+        return res;
+    }
+    
+    *p = '\0';
+    
+    // 2. 递归创建目录
+    char *ptr = path;
+    while ((ptr = strchr(ptr, '/')) != NULL) {
+        *ptr = '\0';
+        mkdir(path, 0755);  // 忽略错误（目录可能已存在）
+        *ptr = '/';
+        ptr++;
+    }
+    mkdir(path, 0755);
+    
+    // 3. 创建文件
+    FILE *fp = fopen(filepath, "w");
+    if (fp) {
+        fclose(fp);
+        res = strdup("success");
+        return res;
+    }
+    res = strdup("failed");
+    return res;
+}
+
+/**
+ * 执行所有工具并构造工具结果消息
+ */
+void execute_all_tools(struct ToolCallManager *mgr) {
+    // 为每个工具调用执行对应的函数
+    for (int i = 0; i < mgr->call_count; i++) {
+        struct ToolCallContext *ctx = &(mgr->calls[i]);
+        
+        // 根据函数名执行不同的操作
+        char *result = NULL;
+        if (strcmp(ctx->name, "list_dir") == 0) {
+            // 解析参数并调用天气函数
+            cJSON *args = cJSON_Parse(ctx->arguments);
+            cJSON *dir_path = cJSON_GetObjectItem(args, "dir_path");
+            if (dir_path && cJSON_IsString(dir_path)) {
+                result = list_dir(dir_path->valuestring);
+            }
+            cJSON_Delete(args);
+        } else if (strcmp(ctx->name, "get_cwd") == 0) {
+            result = get_cwd();
+        } else if (strcmp(ctx->name, "make_file") == 0) {
+            cJSON *args = cJSON_Parse(ctx->arguments);
+            cJSON *dir_path = cJSON_GetObjectItem(args, "dir_path");
+            cJSON *filename = cJSON_GetObjectItem(args, "filename");
+            if (dir_path && cJSON_IsString(dir_path) && 
+                    filename && cJSON_IsString(filename)) {
+                result = make_file(dir_path->valuestring, filename->valuestring);
+            }
+            cJSON_Delete(args);
+        } else {
+            result = strdup("未知工具");
+        }
+        
+        // 构造工具结果消息
+        ctx->is_complete = 1;
+        ctx->result = result;
+    }
+    mgr->all_complete = 1;
+}
+
+/**
+ * debug用
+ */
 void print_tool_call_mgr(const struct ToolCallManager *mgr) {
     printf("tool call manager: call_count=%d, capacity=%d\n", mgr->call_count, mgr->capacity);
     for (int i = 0; i < mgr->call_count; i++) {
@@ -173,37 +274,6 @@ void process_tool_calls(struct ToolCallManager *mgr, cJSON *tool_calls) {
             }
         }
     }
-}
-
-/**
- * 执行所有工具并构造工具结果消息
- */
-void execute_all_tools(struct ToolCallManager *mgr) {
-    // 为每个工具调用执行对应的函数
-    for (int i = 0; i < mgr->call_count; i++) {
-        struct ToolCallContext *ctx = &(mgr->calls[i]);
-        
-        // 根据函数名执行不同的操作
-        char *result = NULL;
-        if (strcmp(ctx->name, "list_dir") == 0) {
-            // 解析参数并调用天气函数
-            cJSON *args = cJSON_Parse(ctx->arguments);
-            cJSON *dir_path = cJSON_GetObjectItem(args, "dir_path");
-            if (dir_path && cJSON_IsString(dir_path)) {
-                result = list_dir(dir_path->valuestring);
-            }
-            cJSON_Delete(args);
-        } else if (strcmp(ctx->name, "get_cwd") == 0) {
-            result = get_cwd();
-        } else {
-            result = strdup("未知工具");
-        }
-        
-        // 构造工具结果消息
-        ctx->is_complete = 1;
-        ctx->result = result;
-    }
-    mgr->all_complete = 1;
 }
 
 /**

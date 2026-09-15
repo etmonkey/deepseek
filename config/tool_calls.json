@@ -26,5 +26,25 @@
                 "required": ["dir_path"]
             }
         }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "make_file",
+            "description": "create file in the directory, directory will be automatically created recursively.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dir_path": {
+                        "type": "string",
+                        "description": "the directory path which you want create file in."
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "the file you want to create in the directory."
+                    }
+                },
+                "required": ["dir_path", "filename"]
+            }
+        }
     }
 ]

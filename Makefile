@@ -10,10 +10,10 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-ds.o: ds.c tool_calls.h config_json.h tool_calls_json.h
+ds.o: ds.c tool_calls.h config_json.h tool_calls_json.h global_vars.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-tool_calls.o: tool_calls.c tool_calls.h
+tool_calls.o: tool_calls.c tool_calls.h global_vars.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 config_json.h: ./config/config.json gen_config_header.py

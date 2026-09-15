@@ -550,7 +550,7 @@ int ensure_path(const char *filepath) {
  * 与用户交互
  */
 enum prompt_res_enum chat_prompt(char** final_msg, struct Memory* pmem, cJSON* data_root) {
-    printf(">");
+    printf("> ");
     if (!isatty(fileno(stdin)))
     {
         fclose(stdin);
@@ -1114,7 +1114,7 @@ void ensure_config_files() {
                 perror("internal error!");
                 exit(1);
             }
-            printf("please enter api key for %s provider > ", provider_choice_str);
+            printf("please enter api key for %s provider: ", provider_choice_str);
             char api_key[1024];
             if (fgets(api_key, sizeof(api_key), stdin) == NULL) {
                 perror("read api key failed!");
@@ -1173,7 +1173,7 @@ void show_help() {
     printf("\t-h: show help\n");
     printf("\t-c: chat mode\n");
     printf("\t-s: stream mode t(default)/f\n");
-    printf("\t-t: use tool calls n(none, default)/a(auto)/r(required)\n");
+    printf("\t-t: use tool calls n(none)/a(auto, default)/r(required)\n");
     printf("\t-p: add prompt\n");
     printf("\t-q: add to question\n");
     printf("\t-v: choose deepseek provider\n");

@@ -2,12 +2,13 @@
 #define TOOL_CALLS_H
 
 #include <stddef.h>
-#include "cjson/cJSON.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <sys/stat.h>
+#include "cjson/cJSON.h"
 #include "global_vars.h"
 
 #define MAX_TOOL_CALL_ITER 5

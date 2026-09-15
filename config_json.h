@@ -27,7 +27,7 @@ static const char CONFIG_JSON[] =
 "        }\n"
 "    },\n"
 "    \"model_choice\": \"flash\",\n"
-"    \"tool_choice\": \"none\",\n"
+"    \"tool_choice\": \"auto\",\n"
 "    \"prompt\":  \"请使用中文回答\",\n"
 "    \"thinking\": \"disabled\",\n"
 "    \"reasoning_effort\": \"high\",\n"
