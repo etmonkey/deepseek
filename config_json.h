@@ -1,7 +1,6 @@
 #pragma once
 static const char CONFIG_JSON[] =
 "{\n"
-"    \"provider_choice\": \"official\",\n"
 "    \"provider\": {\n"
 "        \"official\": {\n"
 "            \"base_url\": \"https://api.deepseek.com/chat/completions\",\n"
@@ -26,6 +25,7 @@ static const char CONFIG_JSON[] =
 "            }\n"
 "        }\n"
 "    },\n"
+"    \"provider_choice\": \"official\",\n"
 "    \"model_choice\": \"flash\",\n"
 "    \"tool_choice\": \"auto\",\n"
 "    \"prompt\":  \"请使用中文回答\",\n"

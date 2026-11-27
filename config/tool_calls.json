@@ -46,5 +46,21 @@
                 "required": ["dir_path", "filename"]
             }
         }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Get the content of a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "path of the file you want read."
+                    }
+                },
+                "required": ["file_path"]
+            }
+        }
     }
 ]

@@ -108,6 +108,40 @@ char* make_file(const char* dir_path, const char* filename) {
 }
 
 /**
+ * 读取文件内容
+ */
+char* read_file(const char* file_path) {
+    FILE *fp = fopen(file_path, "r");
+    if (!fp) {
+        perror("fopen failed!");
+        return NULL;
+    }
+
+    // 移到文件末尾获取大小
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    if (size < 0) {
+        fclose(fp);
+        return NULL;
+    }
+    rewind(fp);
+
+    // 分配内存（+1 用于 '\0'）
+    char *buffer = malloc(size + 1);
+    if (!buffer) {
+        fclose(fp);
+        return NULL;
+    }
+
+    // 读取内容
+    size_t nread = fread(buffer, 1, size, fp);
+    buffer[nread] = '\0';
+
+    fclose(fp);
+    return buffer;
+}
+
+/**
  * 执行所有工具并构造工具结果消息
  */
 void execute_all_tools(struct ToolCallManager *mgr) {
@@ -118,7 +152,7 @@ void execute_all_tools(struct ToolCallManager *mgr) {
         // 根据函数名执行不同的操作
         char *result = NULL;
         if (strcmp(ctx->name, "list_dir") == 0) {
-            // 解析参数并调用天气函数
+            // 解析参数并调用函数
             cJSON *args = cJSON_Parse(ctx->arguments);
             cJSON *dir_path = cJSON_GetObjectItem(args, "dir_path");
             if (dir_path && cJSON_IsString(dir_path)) {
@@ -134,6 +168,13 @@ void execute_all_tools(struct ToolCallManager *mgr) {
             if (dir_path && cJSON_IsString(dir_path) && 
                     filename && cJSON_IsString(filename)) {
                 result = make_file(dir_path->valuestring, filename->valuestring);
+            }
+            cJSON_Delete(args);
+        } else if (strcmp(ctx->name, "read_file") == 0) {
+            cJSON *args = cJSON_Parse(ctx->arguments);
+            cJSON *file_path = cJSON_GetObjectItem(args, "file_path");
+            if (file_path && cJSON_IsString(file_path)) {
+                result = read_file(file_path->valuestring);
             }
             cJSON_Delete(args);
         } else {

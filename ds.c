@@ -726,6 +726,7 @@ int ask_for_chat(cJSON* config, char** final_msg, struct Memory* pmem) {
         }
 
         pmem->reply_size = 0;
+        printf("\n\n");
 
 chat_prompt:
         int prompt_res = chat_prompt(final_msg, pmem, data_root);

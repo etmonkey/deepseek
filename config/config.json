@@ -1,5 +1,4 @@
 {
-    "provider_choice": "official",
     "provider": {
         "official": {
             "base_url": "https://api.deepseek.com/chat/completions",
@@ -24,6 +23,7 @@
             }
         }
     },
+    "provider_choice": "official",
     "model_choice": "flash",
     "tool_choice": "auto",
     "prompt":  "请使用中文回答",
